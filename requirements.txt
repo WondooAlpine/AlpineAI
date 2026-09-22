@@ -1,0 +1,8 @@
+streamlit
+google-genai
+pydantic
+playwright
+pillow
+aiohttp
+reportlab
+pypdf
