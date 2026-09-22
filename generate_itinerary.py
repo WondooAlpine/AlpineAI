@@ -400,7 +400,7 @@ def generate_itinerary_content(prompt: str) -> TourItinerary:
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",  # Reliable, high-throughput model
+                model="gemini-3.5-flash",  # Reliable, high-throughput model
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
