@@ -10,6 +10,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from playwright.async_api import async_playwright
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,6 @@ HTML_DAY_TEMPLATE = """
     z-index: 10;
   }}
 
-  /* Clean bold DAY indicator */
   .day-title {{
     font-family: 'Poppins', sans-serif;
     font-size: 60px;
@@ -109,12 +109,11 @@ HTML_DAY_TEMPLATE = """
     line-height: 0.95;
   }}
 
-  /* Route Title: Natural brush script with no background */
   .route-title {{
     font-family: 'Caveat', cursive;
     font-size: 52px;
     font-weight: 700;
-    color: #b45309; /* Warm amber/brown tone for premium contrast */
+    color: #b45309;
     line-height: 1.0;
     text-transform: none;
     letter-spacing: 0.2px;
@@ -123,7 +122,6 @@ HTML_DAY_TEMPLATE = """
     white-space: nowrap;
   }}
 
-  /* Left photo inside rounded black frame */
   .photo-slot {{
     position: absolute;
     top: 48.6%;
@@ -143,7 +141,6 @@ HTML_DAY_TEMPLATE = """
     display: block;
   }}
 
-  /* Caption below the photo */
   .place-name-slot {{
     position: absolute;
     top: 71.0%;
@@ -163,7 +160,6 @@ HTML_DAY_TEMPLATE = """
     z-index: 10;
   }}
 
-  /* Itinerary slot bounded between the two horizontal yellow lines */
   .itinerary-slot {{
     position: absolute;
     top: 27.2%;
@@ -236,10 +232,6 @@ HTML_SIGHTSEEING_TEMPLATE = """
     color: #111;
   }}
 
-  /* 
-     Elegantly transform the left yellow promo bubble into a branded section badge 
-     so 'GET SPECIAL PROMO' is completely replaced rather than clashing.
-  */
   .promo-replacement-bubble {{
     position: absolute;
     top: 29.0%;
@@ -272,7 +264,6 @@ HTML_SIGHTSEEING_TEMPLATE = """
     letter-spacing: 0.5px;
   }}
 
-  /* Erase lower photo frame area smoothly with a matching soft cream patch */
   .mask-lower-photo {{
     position: absolute;
     top: 48.0%;
@@ -284,7 +275,6 @@ HTML_SIGHTSEEING_TEMPLATE = """
     z-index: 7;
   }}
 
-  /* Header Container: Transparent, No White Box */
   .header-slot-box {{
     position: absolute;
     top: 15.6%;
@@ -315,7 +305,6 @@ HTML_SIGHTSEEING_TEMPLATE = """
     line-height: 1.0;
   }}
 
-  /* Content area strictly placed between yellow dividers */
   .sightseeing-container {{
     position: absolute;
     top: 27.2%;
@@ -369,7 +358,6 @@ HTML_SIGHTSEEING_TEMPLATE = """
 </style>
 </head>
 <body>
-  <!-- Clean badge that covers 'GET SPECIAL PROMO' gracefully -->
   <div class="promo-replacement-bubble">
     <div class="badge-line1">Enroute</div>
     <div class="badge-line2">SPOTS</div>
@@ -377,13 +365,11 @@ HTML_SIGHTSEEING_TEMPLATE = """
 
   <div class="mask-lower-photo"></div>
 
-  <!-- Transparent Header -->
   <div class="header-slot-box">
     <div class="main-title">SIGHTSEEING ENROUTE</div>
     <div class="sub-title">Major Attractions & Key Viewpoints</div>
   </div>
 
-  <!-- Sightseeing Cards aligned safely inside right container -->
   <div class="sightseeing-container" id="sightseeingBox">
     {sightseeing_cards_html}
   </div>
@@ -392,14 +378,8 @@ HTML_SIGHTSEEING_TEMPLATE = """
 """
 
 # ---------------------------------------------------------------------------
-# 5. Gemini Generation
+# 5. Gemini Generation (FIXED MODEL & EXPONENTIAL BACKOFF)
 # ---------------------------------------------------------------------------
-import time
-import os
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError
-
 def generate_itinerary_content(prompt: str) -> TourItinerary:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -420,7 +400,7 @@ def generate_itinerary_content(prompt: str) -> TourItinerary:
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-3.5-flash",  # High throughput, low latency
+                model="gemini-2.5-flash",  # Reliable, high-throughput model
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -430,14 +410,12 @@ def generate_itinerary_content(prompt: str) -> TourItinerary:
                 ),
             )
             
-            # Parse response into Pydantic model
             if response.text:
                 return TourItinerary.model_validate_json(response.text)
             else:
                 raise ValueError("Received empty response text from Gemini.")
 
         except APIError as e:
-            # Handle rate limits (429) or temporary server busyness (503)
             if e.code in [429, 503] or "temporarily busy" in str(e).lower() or "resource exhausted" in str(e).lower():
                 if attempt < max_retries - 1:
                     sleep_time = base_delay * (2 ** attempt)
@@ -482,14 +460,14 @@ async def render_itinerary_pages(
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-    headless=True,
-    args=[
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-    ]
-)
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
+        )
         page = await browser.new_page(viewport={"width": img_width, "height": img_height})
 
         # 1. Render Day pages
@@ -538,7 +516,7 @@ async def render_itinerary_pages(
             await page.screenshot(path=day_file, type="jpeg", quality=95)
             day_image_paths.append(day_file)
 
-        # 2. Render Sightseeing Summary (Safe right-aligned container)
+        # 2. Render Sightseeing Summary
         cards_html_list = []
         for item in itinerary.sightseeing_enroute:
             attractions_li = "".join([f"<li>📍 {att}</li>" for att in item.attractions])
