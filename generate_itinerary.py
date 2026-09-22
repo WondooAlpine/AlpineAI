@@ -394,49 +394,62 @@ HTML_SIGHTSEEING_TEMPLATE = """
 # ---------------------------------------------------------------------------
 # 5. Gemini Generation
 # ---------------------------------------------------------------------------
-def generate_itinerary_content(prompt_text: str) -> TourItinerary:
-    client = genai.Client(api_key="AQ.Ab8RN6Kn1bV03AFDuvagr2I8ydcVtH0YLTvbfq_Qps-WtzDtNA")
+import time
+import os
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
+
+def generate_itinerary_content(prompt: str) -> TourItinerary:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable is not set.")
+
+    client = genai.Client(api_key=api_key)
 
     system_instruction = (
-        "You are the senior tour itinerary designer for Wondoo Travel App. "
-        "Create an authentic, practical travel itinerary formatted for print flyers. "
-        "For each day you must produce: "
-        "1. route_title: Short, memorable route in Title Case (e.g. 'Arrival – NJP to Rinchenpong via Jorethang'). "
-        "2. place_name: 1 to 3 words in Title Case (e.g. 'Rinchenpong'). "
-        "3. wikipedia_search_term: Clean keyword for photo retrieval (e.g. 'Rinchenpong'). "
-        "4. bullets: Exactly 5 to 6 concise, rich bullet points (20 to 26 words each) starting with an emoji. "
-        "5. sightseeing_enroute: A list for each day detailing the route and 3-5 specific landmarks/viewpoints visited enroute."
+        "You are an elite high-altitude travel curator and route planner specializing "
+        "in the Himalayas (Sikkim, Darjeeling, West Bengal, Ladakh). "
+        "Create an authentic, structured, and realistic day-by-day travel plan based strictly "
+        "on the user's route request. Output valid JSON matching the TourItinerary schema."
     )
 
-    models_to_try = [
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
-    ]
+    max_retries = 4
+    base_delay = 3
 
-    for model_name in models_to_try:
-        for attempt in range(2):
-            try:
-                print(f"📡 Generating plan with {model_name} (attempt {attempt + 1})...")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt_text,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        response_mime_type="application/json",
-                        response_schema=TourItinerary,
-                        temperature=0.3,
-                    ),
-                )
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.5-flash",  # High throughput, low latency
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    response_schema=TourItinerary,
+                    temperature=0.7,
+                ),
+            )
+            
+            # Parse response into Pydantic model
+            if response.text:
                 return TourItinerary.model_validate_json(response.text)
-            except Exception as e:
-                err_str = str(e)
-                print(f"⚠️ Notice with {model_name}: {err_str[:120]}...")
-                if "503" in err_str or "high demand" in err_str.lower():
-                    time.sleep(3)
-                else:
-                    break
+            else:
+                raise ValueError("Received empty response text from Gemini.")
 
-    raise RuntimeError("Gemini API is temporarily busy. Please retry in a few moments.")
+        except APIError as e:
+            # Handle rate limits (429) or temporary server busyness (503)
+            if e.code in [429, 503] or "temporarily busy" in str(e).lower() or "resource exhausted" in str(e).lower():
+                if attempt < max_retries - 1:
+                    sleep_time = base_delay * (2 ** attempt)
+                    time.sleep(sleep_time)
+                    continue
+            raise RuntimeError(f"Gemini API failure: {e}") from e
+        except Exception as e:
+            if "temporarily busy" in str(e).lower() or "503" in str(e) or "429" in str(e):
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+            raise e
 
 # ---------------------------------------------------------------------------
 # 6. Playwright Rendering + PDF Compiler
