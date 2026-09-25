@@ -1,8 +1,7 @@
 streamlit
 google-genai
 pydantic
-playwright
+requests
+pandas
 pillow
-aiohttp
-reportlab
-pypdf
+playwright
