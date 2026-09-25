@@ -28,7 +28,7 @@ st.set_page_config(
 
 BOOKING_WEBHOOK_URL = os.environ.get(
     "BOOKING_WEBHOOK_URL",
-    "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_DEPLOYMENT_ID/exec",
+    "https://script.google.com/macros/s/AKfycbxrotwZm32tyfqntCfzrXeSXAmPy4IYw8tu9QvOLtbplvGUx9I33EadCRB5BSA9IPb_PA/exec",
 )
 AGENCY_WHATSAPP_NUMBER = os.environ.get("AGENCY_WHATSAPP_NUMBER", "919800000000")
 
