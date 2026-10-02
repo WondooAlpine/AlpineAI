@@ -659,7 +659,7 @@ if "messages" not in st.session_state:
             "role": "assistant",
             "content": (
                 "**Wondoo Alpine Concierge**\n\n"
-                "Welcome! Where across our destination circuits (West Bengal, Sikkim, Northeast, Uttarakhand, Himachal, Kashmir, Odisha, Kerala, or Andaman) are you planning to travel, for how long, and who is joining you?"
+                "Welcome! Where across our destination circuits are you planning to travel, for how long, and who is joining you?"
             ),
         }
     ]
