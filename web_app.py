@@ -1,9 +1,16 @@
 import os
 import glob
 import json
+import uuid
+import random
+import asyncio
+import textwrap
 import urllib.parse
-import requests
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List
+
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from google import genai
@@ -14,10 +21,12 @@ from generate_itinerary import (
     render_itinerary_pages,
     TourItinerary,
 )
+from web_image_fetcher import search_key_spot_images
 from stay_matcher import match_stay_for_day
+from booking_pricing import calculate_dynamic_sheet_quotation, generate_upi_qr_url
 
 # ---------------------------------------------------------------------------
-# CONFIGURATION
+# CONFIGURATION & SECRETS
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Wondoo AI Studio | Alpine 3D Expedition Studio",
@@ -28,9 +37,11 @@ st.set_page_config(
 
 BOOKING_WEBHOOK_URL = os.environ.get(
     "BOOKING_WEBHOOK_URL",
-    "https://script.google.com/macros/s/AKfycbxrotwZm32tyfqntCfzrXeSXAmPy4IYw8tu9QvOLtbplvGUx9I33EadCRB5BSA9IPb_PA/exec",
+    "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_DEPLOYMENT_ID/exec",
 )
 AGENCY_WHATSAPP_NUMBER = os.environ.get("AGENCY_WHATSAPP_NUMBER", "919800000000")
+UPI_VPA = os.environ.get("UPI_VPA", "wondooexpeditions@oksbi")
+UPI_PAYEE_NAME = os.environ.get("UPI_PAYEE_NAME", "Wondoo Alpine Studio")
 
 # ---------------------------------------------------------------------------
 # TIME ZONE: INDIAN STANDARD TIME (IST = UTC + 5:30)
@@ -50,6 +61,17 @@ else:
     period_label = f"🌙 Nighttime in India ({ist_time_str} IST)"
     real_mountain_photo_url = "https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=2560&q=92"
     fog_color_hex = "0x050811"
+
+# Curated Expedition & Regional Knowledge Nuggets for Live Waiting State
+ALPINE_FACTS = [
+    "🏔️ **Tiger Hill Sunrise**: Morning sunlight illuminates Mt. Everest and Mt. Kanchenjunga simultaneously before valleys catch dawn.",
+    "🍵 **Darjeeling First Flush**: Harvested from mid-March to May across steep slope elevations, producing a prized light floral muscatel cup.",
+    "🚗 **Mountain Pacing**: Hill drives across Sikkim, Himachal, and Uttarakhand average 20–25 km/h due to winding hairpin bends.",
+    "🪪 **Protected Area Permits**: High-altitude frontiers like Nathula, Tsomgo, and Tawang require registered permits arranged 24h prior.",
+    "🌴 **Kerala Backwaters**: Vembanad Lake connects over 900 km of palm-fringed lagoons, best navigated on traditional Kettuvallam houseboats.",
+    "🏝️ **Andaman Horizons**: Radhanagar Beach on Havelock Island features shallow turquoise reefs ranked among Asia's cleanest shorelines.",
+    "🛕 **Odisha Heritage**: Konark's 13th-century Sun Temple is engineered as a colossal 24-wheel stone chariot aligned with the sun's trajectory."
+]
 
 # ---------------------------------------------------------------------------
 # 1. HARDWARE-ACCELERATED THREE.JS (EDGE-TO-EDGE PROJECTION)
@@ -208,7 +230,7 @@ components.html(
 )
 
 # ---------------------------------------------------------------------------
-# 2. STREAMLIT STYLING (DARK FROSTED CONTROLS & COMPACT SPACING)
+# 2. STREAMLIT DUAL-SIDE CHAT & HIGH-CONTRAST CSS
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -226,58 +248,207 @@ st.markdown(
   }
 
   .block-container {
-    max-width: 1400px !important;
-    padding-top: 1.2rem !important;
-    padding-bottom: 3rem !important;
+    max-width: 1300px !important;
+    padding-top: 1rem !important;
+    padding-bottom: 6.5rem !important;
     position: relative;
     z-index: 1;
   }
 
-  /* Chat Bubbles */
-  [data-testid="stChatMessage"] {
-    background: rgba(15, 23, 42, 0.88) !important;
-    border: 1px solid rgba(56, 189, 248, 0.35) !important;
-    border-radius: 18px !important;
-    padding: 16px 20px !important;
-    margin-bottom: 12px !important;
-    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.55) !important;
-    backdrop-filter: blur(16px) !important;
+  /* HIGH-CONTRAST SPINNER & STATUS TEXT OVERRIDES */
+  [data-testid="stSpinner"],
+  div[data-testid="stSpinner"] > div {
+    color: #fde047 !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+    background: rgba(15, 23, 42, 0.95) !important;
+    padding: 12px 24px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(245, 158, 11, 0.7) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+    display: inline-flex !important;
+    align-items: center !important;
   }
-  [data-testid="stChatMessage"] p, [data-testid="stChatMessage"] span, [data-testid="stChatMessage"] div {
-    color: #f8fafc !important;
-    font-size: 15.5px !important;
-    line-height: 1.65 !important;
+  [data-testid="stSpinner"] i {
+    border-top-color: #f59e0b !important;
   }
 
-  /* Chat Input Bar */
+  [data-testid="stStatusWidget"] {
+    background: rgba(15, 23, 42, 0.95) !important;
+    border: 1px solid rgba(56, 189, 248, 0.4) !important;
+    color: #f8fafc !important;
+    border-radius: 14px !important;
+    padding: 12px !important;
+  }
+  [data-testid="stStatusWidget"] * {
+    color: #f8fafc !important;
+  }
+
+  /* CHAT CONTAINER LAYOUT */
+  [data-testid="stChatMessageContainer"],
+  [data-testid="stChatMessageList"] {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 16px !important;
+    max-width: 960px !important;
+    margin: 0 auto !important;
+  }
+
+  /* 1. ASSISTANT MESSAGE: LEFT-ALIGNED */
+  [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]),
+  [data-testid="stChatMessage"]:has([aria-label="Chat message from assistant"]) {
+    display: flex !important;
+    flex-direction: row !important;
+    align-self: flex-start !important;
+    margin-right: auto !important;
+    margin-left: 0 !important;
+    max-width: 84% !important;
+    background: rgba(15, 23, 42, 0.95) !important;
+    border: 1px solid rgba(56, 189, 248, 0.35) !important;
+    border-radius: 4px 18px 18px 18px !important;
+    padding: 16px 20px !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(14px) !important;
+  }
+
+  /* 2. USER MESSAGE: RIGHT-ALIGNED (AVATAR ON RIGHT) */
+  [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]),
+  [data-testid="stChatMessage"]:has([aria-label="Chat message from user"]) {
+    display: flex !important;
+    flex-direction: row-reverse !important;
+    align-self: flex-end !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+    max-width: 76% !important;
+    background: linear-gradient(135deg, #1e293b, #334155) !important;
+    border: 1px solid rgba(245, 158, 11, 0.55) !important;
+    border-radius: 18px 4px 18px 18px !important;
+    padding: 14px 18px !important;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(14px) !important;
+  }
+
+  /* Chat Typography */
+  [data-testid="stChatMessage"] p, 
+  [data-testid="stChatMessage"] div,
+  [data-testid="stChatMessage"] span {
+    color: #f8fafc !important;
+    font-size: 15px !important;
+    line-height: 1.65 !important;
+  }
+  [data-testid="stChatMessage"] strong {
+    color: #fde047 !important;
+  }
+  [data-testid="stChatMessage"] ul {
+    margin: 8px 0 10px 0 !important;
+    padding-left: 22px !important;
+  }
+  [data-testid="stChatMessage"] li {
+    color: #e2e8f0 !important;
+    margin-bottom: 6px !important;
+  }
+
+  /* GEMINI 3-DOT PULSING ANIMATION & KNOWLEDGE BANNER */
+  .gemini-thinking-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    border-radius: 14px;
+    padding: 10px 16px;
+    margin: 6px 0 10px 0;
+    max-width: 90%;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(12px);
+  }
+  .gemini-loader {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+  .gemini-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: #38bdf8;
+    animation: geminiPulse 1.4s infinite ease-in-out both;
+  }
+  .gemini-dot:nth-child(1) { animation-delay: -0.32s; }
+  .gemini-dot:nth-child(2) { animation-delay: -0.16s; }
+  .gemini-dot:nth-child(3) { animation-delay: 0s; }
+
+  @keyframes geminiPulse {
+    0%, 80%, 100% {
+      transform: scale(0.4);
+      opacity: 0.35;
+      background-color: #38bdf8;
+    }
+    40% {
+      transform: scale(1.15);
+      opacity: 1;
+      background-color: #fde047;
+      box-shadow: 0 0 10px rgba(253, 224, 71, 0.75);
+    }
+  }
+
+  .gemini-thinking-text {
+    font-size: 13.5px;
+    color: #e2e8f0;
+    line-height: 1.45;
+  }
+  .gemini-thinking-text strong {
+    color: #fde047;
+  }
+
+  /* General Form, Input & Modal Labels Contrast */
+  label[data-testid="stWidgetLabel"] p {
+    color: #f8fafc !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+  }
+  .stCaption, [data-testid="stCaptionContainer"] {
+    color: #94a3b8 !important;
+    font-size: 13.5px !important;
+  }
+
+  /* Pinned Bottom Input Bar */
   [data-testid="stBottom"] {
-    background: transparent !important;
-    padding-top: 0rem !important;
+    background: linear-gradient(180deg, transparent 0%, rgba(11, 15, 25, 0.95) 40%, #0b0f19 100%) !important;
+    padding-top: 1.2rem !important;
     padding-bottom: 1.2rem !important;
   }
   [data-testid="stBottom"] > div {
     background: transparent !important;
-    padding: 0 !important;
   }
-  [data-testid="stChatInput"],
+  [data-testid="stChatInput"] {
+    max-width: 900px !important;
+    margin: 0 auto !important;
+    background: #0f172a !important;
+    background-color: #0f172a !important;
+    border: 1.5px solid rgba(245, 158, 11, 0.75) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.65), 0 0 15px rgba(245, 158, 11, 0.2) !important;
+  }
   [data-testid="stChatInput"] > div,
   [data-testid="stChatInput"] div[data-baseweb="base-input"],
   [data-testid="stChatInput"] div[data-baseweb="input"] {
-    background-color: rgba(15, 23, 42, 0.92) !important;
-    background: rgba(15, 23, 42, 0.92) !important;
-    border: 1.5px solid rgba(245, 158, 11, 0.7) !important;
-    border-radius: 16px !important;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.65), 0 0 15px rgba(245, 158, 11, 0.15) !important;
-    backdrop-filter: blur(16px) !important;
+    background: #0f172a !important;
+    background-color: #0f172a !important;
+    border: none !important;
   }
   [data-testid="stChatInput"] textarea {
     background: transparent !important;
+    background-color: transparent !important;
     color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     font-size: 15px !important;
     caret-color: #fde047 !important;
   }
   [data-testid="stChatInput"] textarea::placeholder {
     color: #94a3b8 !important;
+    -webkit-text-fill-color: #94a3b8 !important;
     opacity: 0.9 !important;
   }
   [data-testid="stChatInput"] button {
@@ -290,9 +461,9 @@ st.markdown(
     fill: #0b0f19 !important;
   }
 
-  /* Hero Section */
+  /* Hero Banner */
   .hero-container {
-    padding: 22px 0 16px 0;
+    padding: 20px 0 14px 0;
     text-align: center;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     margin-bottom: 20px;
@@ -328,7 +499,7 @@ st.markdown(
     -webkit-text-fill-color: transparent;
   }
 
-  /* Waypoint Card */
+  /* Cards & Components */
   .waypoint-card {
     background: rgba(15, 23, 42, 0.88) !important;
     border: 1px solid rgba(255, 255, 255, 0.15) !important;
@@ -348,8 +519,59 @@ st.markdown(
     border-radius: 6px;
     margin-right: 10px;
   }
+  .day-photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin: 10px 0 14px 0;
+  }
+  .day-photo-card {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    height: 155px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: #0b1329;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  }
+  .day-photo-card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s ease;
+  }
+  .day-photo-card:hover img {
+    transform: scale(1.05);
+  }
+  .photo-tag-pill {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(245, 158, 11, 0.6);
+    color: #fde047;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 6px;
+    backdrop-filter: blur(6px);
+  }
+  .photo-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.95) 90%);
+    padding: 6px 10px;
+    color: #f1f5f9;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-  /* Stay Cards with Photography */
   .stay-card {
     background: rgba(15, 23, 42, 0.90) !important;
     border: 1px solid rgba(56, 189, 248, 0.3) !important;
@@ -390,7 +612,27 @@ st.markdown(
     padding: 16px 18px;
   }
 
-  /* Production Expander */
+  .plan-tag {
+    background: #1e293b;
+    border: 1px solid #38bdf8;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    color: #38bdf8;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+  .pricing-tag {
+    background: #14532d;
+    border: 1px solid #22c55e;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    color: #86efac;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+
   [data-testid="stExpander"] summary {
     background: rgba(15, 23, 42, 0.95) !important;
     border: 1px solid rgba(245, 158, 11, 0.6) !important;
@@ -416,9 +658,8 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": (
-                "Namaste! I am your **Wondoo Alpine AI Concierge**.\n\n"
-                "Tell me where you want to travel (e.g. Sikkim, Darjeeling, Kalimpong, or Ladakh), "
-                "how many days, and your preferred travel pace."
+                "**Wondoo Alpine Concierge**\n\n"
+                "Welcome! Where across our destination circuits (West Bengal, Sikkim, Northeast, Uttarakhand, Himachal, Kashmir, Odisha, Kerala, or Andaman) are you planning to travel, for how long, and who is joining you?"
             ),
         }
     ]
@@ -433,116 +674,181 @@ if "booking_confirmed" not in st.session_state:
     st.session_state.booking_confirmed = None
 
 # ---------------------------------------------------------------------------
-# 4. PACKAGE BOOKING MODAL (AUTO-CLOSE + LEAD DISPATCH)
+# 4. PACKAGE BOOKING & QUOTATION MODAL
 # ---------------------------------------------------------------------------
-@st.dialog("🎒 Reserve Complete Himalayan Expedition Package")
+@st.dialog("🎒 Reserve Complete Expedition Package", width="large")
 def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
-    st.markdown(f"#### **{itinerary.tour_title}** ({itinerary.duration})")
-    st.caption(
-        "Provide your group details below. Our concierge team logs your request in our master inventory sheet and prepares your confirmation."
+    st.markdown(f"### **{itinerary.tour_title}** ({itinerary.duration})")
+
+    total_days = len(itinerary.days)
+    total_nights = len(matched_stays)
+    booking_id = f"WND-{uuid.uuid4().hex[:6].upper()}"
+
+    st.markdown("##### **1. Traveler & Logistics Details**")
+    c1, c2, c3 = st.columns([1.2, 1, 1])
+    with c1:
+        lead_name = st.text_input("Lead Traveler Name*", placeholder="e.g. Rahul Sharma")
+    with c2:
+        phone_num = st.text_input("WhatsApp / Contact Number*", placeholder="e.g. 9876543210")
+    with c3:
+        email_addr = st.text_input("Confirmation Email", placeholder="e.g. rahul@example.com")
+
+    c_heads, c_rooms, c_pickup = st.columns([1, 1, 1.2])
+    with c_heads:
+        num_heads = st.number_input("Total Heads", min_value=1, max_value=25, value=2)
+    with c_rooms:
+        num_rooms = st.number_input("Rooms", min_value=1, max_value=12, value=1)
+    with c_pickup:
+        pickup_loc = st.selectbox(
+            "Pickup & Drop Point",
+            [
+                "Bagdogra Airport (IXB)", "New Jalpaiguri Stn (NJP)", "Siliguri Junction",
+                "Pakyong Airport (PYG)", "Gangtok Stand", "Guwahati Airport (GAU)",
+                "Dehradun Airport (DED)", "Chandigarh Airport (IXC)", "Srinagar Airport (SXR)",
+                "Cochin Airport (COK)", "Bhubaneswar Airport (BBI)", "Port Blair Airport (IXZ)"
+            ]
+        )
+
+    cab_option = st.selectbox(
+        "Dedicated Sightseeing Cab",
+        [
+            "Include Dedicated Cab (Innova / Scorpio / Bolero 4x4 / Tempo)",
+            "Self-Arranged (No Cab Required)"
+        ]
     )
 
-    with st.form("package_booking_form"):
-        col_name, col_phone = st.columns(2)
-        with col_name:
-            lead_name = st.text_input("Lead Traveler Name*", placeholder="e.g. Rahul Sharma")
-        with col_phone:
-            phone_num = st.text_input("WhatsApp / Contact Number*", placeholder="e.g. +91 98765 43210")
+    special_requests = st.text_area(
+        "Special Requests (Optional)",
+        placeholder="e.g., Mountain/Valley view room, ground floor preference, airport pickup arrival flight number..."
+    )
 
-        col_heads, col_rooms = st.columns(2)
-        with col_heads:
-            num_heads = st.number_input(
-                "Total Number of Heads (Adults + Kids)", min_value=1, max_value=35, value=2
-            )
-        with col_rooms:
-            num_rooms = st.number_input("Rooms Required", min_value=1, max_value=15, value=1)
+    pricing = calculate_dynamic_sheet_quotation(
+        matched_stays=matched_stays,
+        total_days=total_days,
+        num_heads=int(num_heads),
+        num_rooms=int(num_rooms),
+        cab_option=cab_option
+    )
 
-        col_food, col_cab = st.columns(2)
-        with col_food:
-            meal_plan = st.selectbox(
-                "Meal Plan Preference",
-                [
-                    "With Fooding (MAP - Breakfast + Dinner included)",
-                    "All Meals (AP - Breakfast + Lunch + Dinner)",
-                    "Without Fooding (EP - Room Only / Ala Carte on-site)",
-                ],
-            )
-        with col_cab:
-            cab_option = st.selectbox(
-                "Mountain Transit & Sightseeing Cab",
-                [
-                    "Include Dedicated Cab (Innova / Scorpio / Bolero 4x4)",
-                    "Self-Arranged (I will manage my own transit)",
-                ],
-            )
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 15px 0;'>", unsafe_allow_html=True)
+    st.markdown("##### **2. Dynamic Fare Breakdown & Quotation**")
 
-        special_requests = st.text_area(
-            "Special Requests (Optional)",
-            placeholder="e.g., Room with Kangchenjunga view, ground-floor for seniors, pickup from Bagdogra (IXB)...",
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Est. Total Package", f"₹{pricing['grand_total']:,}")
+    q2.metric("Per Head Cost", f"₹{pricing['per_head']:,}")
+    q3.metric("25% Advance Token", f"₹{pricing['advance_payable']:,}")
+    q4.metric("Duration", f"{total_days}D / {pricing['nights']}N")
+
+    with st.expander("📄 View Itemized Property & Transport Breakdown", expanded=False):
+        for item in pricing["stay_breakdown"]:
+            st.markdown(
+                f"• **Night {item['night']} — {item['hotel']}** "
+                f"<span class='plan-tag'>{item['plan']} Plan</span> "
+                f"<span class='pricing-tag'>{item['pricing_type']}</span> "
+                f"<span style='color:#cbd5e1; font-size:12px;'>({item['plan_desc']})</span>: "
+                f"**₹{item['cost']:,}** (`{item['formula']}`)",
+                unsafe_allow_html=True
+            )
+        st.write(f"• **Dedicated Vehicle ({total_days} Days)**: ₹{pricing['cab_cost']:,}")
+        st.write(f"• **GST (5% Hospitality)**: ₹{pricing['gst_amount']:,}")
+        st.markdown(f"**Guaranteed Total**: **₹{pricing['grand_total']:,}**")
+
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 15px 0;'>", unsafe_allow_html=True)
+    st.markdown("##### **3. Lock Dates (Payment & Confirmation)**")
+
+    qr_col, info_col = st.columns([1, 1.6])
+    with qr_col:
+        qr_url = generate_upi_qr_url(
+            vpa=UPI_VPA,
+            payee_name=UPI_PAYEE_NAME,
+            amount=float(pricing["advance_payable"]),
+            booking_id=booking_id
         )
+        st.image(qr_url, width=180, caption=f"Ref: {booking_id}")
+    with info_col:
+        st.markdown(f"""
+        - **Payee**: `{UPI_PAYEE_NAME}`
+        - **UPI ID**: `{UPI_VPA}`
+        - **Booking Ref**: `{booking_id}`
+        - **Advance Token Due**: **₹{pricing['advance_payable']:,}**
+        """)
+        txn_ref = st.text_input("12-digit UPI UTR / Ref # (After scanning)", placeholder="e.g. 427810398412")
 
-        submitted = st.form_submit_button(
-            "🚀 Submit Reservation Request", type="primary", use_container_width=True
-        )
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🚀 Confirm & Lock Expedition Booking", type="primary", use_container_width=True):
+        if not lead_name.strip() or not phone_num.strip():
+            st.error("Please provide both Lead Traveler Name and WhatsApp Number.")
+            return
 
-        if submitted:
-            if not lead_name.strip() or not phone_num.strip():
-                st.error("Please provide both Lead Traveler Name and Contact Number.")
-            else:
-                stays_summary = "; ".join(
-                    [
-                        f"Day {s['day']}: {s['stay_name']} ({s.get('property_type', 'Lodge')})"
-                        for s in matched_stays
-                    ]
-                )
+        stays_summary = "; ".join([
+            f"Night {s['night']}: {s['hotel']} [{s['plan']} - {s['pricing_type']}]" 
+            for s in pricing["stay_breakdown"]
+        ])
 
-                payload = {
-                    "lead_name": lead_name.strip(),
-                    "phone": phone_num.strip(),
-                    "circuit": itinerary.tour_title,
-                    "duration": itinerary.duration,
-                    "heads": int(num_heads),
-                    "rooms": int(num_rooms),
-                    "meal_plan": meal_plan,
-                    "cab_option": cab_option,
-                    "special_requests": special_requests.strip(),
-                    "stays_summary": stays_summary,
-                }
+        payload = {
+            "booking_id": booking_id,
+            "timestamp": datetime.now(ist_tz).isoformat(),
+            "lead_name": lead_name.strip(),
+            "phone": phone_num.strip(),
+            "email": email_addr.strip(),
+            "pickup_location": pickup_loc,
+            "circuit": itinerary.tour_title,
+            "duration": itinerary.duration,
+            "heads": int(num_heads),
+            "rooms": int(num_rooms),
+            "cab_option": cab_option,
+            "grand_total": pricing["grand_total"],
+            "advance_payable": pricing["advance_payable"],
+            "per_head": pricing["per_head"],
+            "transaction_utr": txn_ref.strip() if txn_ref.strip() else "PENDING_VERIFICATION",
+            "special_requests": special_requests.strip(),
+            "stays_summary": stays_summary
+        }
 
-                if "YOUR_APPS_SCRIPT" not in BOOKING_WEBHOOK_URL:
-                    try:
-                        requests.post(BOOKING_WEBHOOK_URL, json=payload, timeout=8)
-                    except Exception as e:
-                        print(f"Webhook dispatch error: {e}")
+        if "YOUR_APPS_SCRIPT" not in BOOKING_WEBHOOK_URL:
+            try:
+                requests.post(BOOKING_WEBHOOK_URL, json=payload, timeout=8)
+            except Exception as e:
+                print(f"Webhook dispatch error: {e}")
 
-                # Save confirmation state & close modal by rerunning
-                st.session_state.booking_confirmed = {
-                    "lead_name": lead_name.strip(),
-                    "phone": phone_num.strip(),
-                    "circuit": itinerary.tour_title,
-                    "duration": itinerary.duration,
-                }
-                st.rerun()
+        st.session_state.booking_confirmed = payload
+        st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERO SECTION
+# 5. HERO SECTION
 # ---------------------------------------------------------------------------
 st.markdown(
     f"""
 <div class="hero-container">
   <div class="ai-status-pill">{period_label}</div>
   <div class="hero-title">Wondoo <span>Alpine Studio</span></div>
-  <div style="color: #cbd5e1; font-size: 15px;">Conversational Himalayan Expedition Architect, Stay Matcher & Brochure Engine</div>
+  <div style="color: #e2e8f0; font-size: 15px; font-weight: 500;">Conversational Expedition Architect, Stay Matcher & Brochure Engine</div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
-# BOOKING CONFIRMATION BANNER (DISPLAYS ONCE MODAL AUTO-CLOSES)
+# 6. CONFIRMATION BANNER & WHATSAPP VOUCHER ROUTING
 # ---------------------------------------------------------------------------
 if st.session_state.get("booking_confirmed"):
     info = st.session_state.booking_confirmed
+
+    wa_dispatch_text = urllib.parse.quote(
+        f"🏔️ *Wondoo Alpine Reservation Confirmation*\n\n"
+        f"• *Booking ID*: {info['booking_id']}\n"
+        f"• *Lead Traveler*: {info['lead_name']}\n"
+        f"• *Contact*: {info['phone']}\n"
+        f"• *Circuit*: {info['circuit']} ({info['duration']})\n"
+        f"• *Pickup*: {info['pickup_location']}\n"
+        f"• *Party*: {info['heads']} Heads | {info['rooms']} Rooms\n"
+        f"• *Grand Total*: ₹{info['grand_total']:,}\n"
+        f"• *Advance Token*: ₹{info['advance_payable']:,}\n"
+        f"• *UTR Ref*: {info['transaction_utr']}\n\n"
+        f"Please share our expedition check-in voucher and driver assignment."
+    )
+    wa_direct_url = f"https://api.whatsapp.com/send?phone={AGENCY_WHATSAPP_NUMBER}&text={wa_dispatch_text}"
+
     st.markdown(
         f"""
     <div style="
@@ -557,12 +863,24 @@ if st.session_state.get("booking_confirmed"):
       <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;">
         <div>
           <div style="font-size: 1.25rem; font-weight: 800; color: #34d399; margin-bottom: 6px;">
-            🎉 Reservation Request Received!
+            🎉 Reservation #{info['booking_id']} Locked & Confirmed!
           </div>
-          <div style="font-size: 15px; color: #f1f5f9; line-height: 1.6;">
-            Thank you, <b>{info['lead_name']}</b>. Your booking request for <b>{info['circuit']} ({info['duration']})</b> has been recorded in our reservation database.<br>
-            <span style="color: #fde047; font-weight: 700;">Our dedicated representative will contact you shortly on {info['phone']}</span> to verify stay availability and confirm your expedition voucher.
+          <div style="font-size: 15px; color: #f1f5f9; line-height: 1.6; margin-bottom: 12px;">
+            Thank you, <b>{info['lead_name']}</b>. Your expedition request for <b>{info['circuit']}</b> (Est. <b>₹{info['grand_total']:,}</b>) has been logged.<br>
+            Advance Ref: <code style="color: #fde047;">{info['transaction_utr']}</code>
           </div>
+          <a href="{wa_direct_url}" target="_blank" style="
+              display: inline-block;
+              background: #25D366; 
+              color: white; 
+              text-decoration: none; 
+              padding: 9px 18px; 
+              border-radius: 10px; 
+              font-weight: 700;
+              font-size: 14px;
+          ">
+              💬 Send Booking Summary to WhatsApp
+          </a>
         </div>
       </div>
     </div>
@@ -575,70 +893,129 @@ if st.session_state.get("booking_confirmed"):
         st.rerun()
 
 # ---------------------------------------------------------------------------
-# MAIN WORKSPACE (CONVERSATION INITIAL -> DUAL WORKSPACE FINAL)
+# 7. MAIN WORKSPACE (CONVERSATIONAL LIVE CHAT)
 # ---------------------------------------------------------------------------
 if not st.session_state.itinerary_data:
-    st.markdown("<h3 style='color: #ffffff; margin-bottom: 12px;'>💬 Live Expedition Dialogue</h3>", unsafe_allow_html=True)
-
+    # 1. Render all past messages using native chat components
     for msg in st.session_state.messages:
-        avatar = "🏔️" if msg["role"] == "assistant" else "👤"
-        with st.chat_message(msg["role"], avatar=avatar):
+        role = msg["role"]
+        avatar = "👤" if role == "user" else "🏔️"
+        with st.chat_message(role, avatar=avatar):
             st.markdown(msg["content"])
 
-    if user_prompt := st.chat_input("E.g., Plan 4 days in West Sikkim with great views and relaxing village walks..."):
+    # 2. Finalize Button appears once consultation starts
+    if len(st.session_state.messages) > 1:
+        c_left, c_center, c_right = st.columns([1, 2.5, 1])
+        with c_center:
+            if st.button("✨ Finalize Itinerary & Reveal Curated Stays", type="primary", use_container_width=True):
+                with st.spinner("Synthesizing final day-by-day itinerary..."):
+                    dialogue_digest = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
+                    extraction_prompt = f"Create an authentic, structured tour itinerary based on this conversation:\n\n{dialogue_digest}"
+                    try:
+                        plan = generate_itinerary_content(extraction_prompt)
+                        st.session_state.itinerary_data = plan
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Generation error: {e}")
+
+    # 3. Live User Input & Dual-Banner Streaming Generation
+    if user_prompt := st.chat_input("E.g., What would be an ideal relaxing getaway in Darjeeling and Kalimpong?"):
+        # Display user message immediately on the right
         st.session_state.messages.append({"role": "user", "content": user_prompt})
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_prompt)
 
+        # Assistant Stream Generation on the left
         with st.chat_message("assistant", avatar="🏔️"):
-            with st.spinner("Analyzing Himalayan passes, topography, and routes..."):
-                raw_key = os.environ.get("GEMINI_API_KEY", "").strip().strip("'").strip('"')
+            # Combined 3-Dot Loader + Alpine Knowledge Banner
+            random_fact = random.choice(ALPINE_FACTS)
+            waiting_banner = st.empty()
+            waiting_banner.markdown(
+                f"""
+                <div class="gemini-thinking-banner">
+                    <div class="gemini-loader">
+                        <div class="gemini-dot"></div>
+                        <div class="gemini-dot"></div>
+                        <div class="gemini-dot"></div>
+                    </div>
+                    <div class="gemini-thinking-text">
+                        {random_fact}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-                if not raw_key:
-                    st.error("Missing GEMINI_API_KEY. Please set an environment variable with a key starting with 'AIzaSy'.")
-                    st.stop()
+            client = genai.Client(api_key=raw_key, http_options={"api_version": "v1beta"})
 
-                client = genai.Client(api_key=raw_key, http_options={"api_version": "v1beta"})
+            # Conversational prompt without Day 1 / Day 2 items
+            system_instruction = (
+                "You are the senior AI Travel Concierge at Wondoo Studio, engaging in a friendly, knowledgeable, and consultative dialogue.\n\n"
 
-                system_instruction = (
-                    "You are the master AI Travel Concierge at Wondoo Alpine Studio specializing in the Himalayas. "
-                    "Engage warmly, discuss mountain road travel times, and altitude pacing. "
-                    "When the user is satisfied, prompt them to click '✨ Finalize Itinerary & Reveal Curated Stays'."
+                "OFFICIAL OPERATING FOOTPRINT (Only plan trips within these destinations):\n"
+                "• Eastern Himalayas & Hills: West Bengal (Darjeeling, Kalimpong, Dooars, Sandakphu), Sikkim (Gangtok, Pelling, North Sikkim).\n"
+                "• Northeast India: Assam (Kaziranga, Guwahati, Majuli), Meghalaya (Shillong, Cherrapunji, Dawki), Arunachal Pradesh (Tawang, Ziro, Dirang).\n"
+                "• North Himalayas: Uttarakhand, Himachal Pradesh, Jammu & Kashmir (including Ladakh circuits).\n"
+                "• Heritage & Coastal Escapes: Odisha (Bhubaneswar, Puri, Konark, Chilika), Kerala (Munnar, Alleppey, Wayanad, Kochi).\n"
+                "• Island Expeditions: Andaman & Nicobar Islands (Port Blair, Havelock, Neil Island).\n\n"
+
+                "CRITICAL FORMATTING & STYLE DIRECTIVES:\n"
+                "1. DO NOT GENERATE A DAY-BY-DAY ITINERARY IN THIS CHAT (Strictly NO 'Day 1', 'Day 2', 'Day 3', or chronological daily schedules). "
+                "The detailed day-by-day itinerary will be compiled later by the app's itinerary engine when the user clicks the finalize button.\n"
+                "2. KEEP IT CONVERSATIONAL & INFORMATIVE: Speak like an experienced, warm travel planner. Discuss route feasibility, key highlights, "
+                "altitude & weather conditions, transit experience, scenic highlights, or local recommendations in natural, engaging paragraphs.\n"
+                "3. MANDATORY CLOSING CALL-TO-ACTION (Every response must end with this exact thought):\n"
+                "   Conclude by warmly asking if this direction matches their preferences, and tell them that once they are happy with the plan, "
+                "they can click the '✨ Finalize Itinerary & Reveal Curated Stays' button right below to generate the complete day-by-day itinerary and view matched properties.\n\n"
+
+                "GUARDRAIL RULES:\n"
+                "- Out-of-Scope Regions: Politely explain that Wondoo Studio operates across our specified circuits and suggest an equivalent escape within our portfolio.\n"
+                "- Rushed/Impossible Circuits: Gently highlight terrain or transit realities and offer a better, well-paced alternative.\n"
+                "- Off-Topic/Unusual Queries: Politely answer in 1 sentence and guide them back to holiday planning.\n\n"
+
+                "TONE & LENGTH:\n"
+                "- Warm, professional, inviting, and inspiring.\n"
+                "- Target length: 140 to 200 words. Never trail off."
+            )
+
+            contents = [
+                types.Content(
+                    role="user" if m["role"] == "user" else "model",
+                    parts=[types.Part.from_text(text=m["content"])],
                 )
+                for m in st.session_state.messages
+            ]
 
-                contents = [
-                    types.Content(
-                        role="user" if m["role"] == "user" else "model",
-                        parts=[types.Part.from_text(text=m["content"])],
-                    )
-                    for m in st.session_state.messages
-                ]
+            response_stream = client.models.generate_content_stream(
+                model="gemini-3.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.35,
+                    max_output_tokens=2048,
+                ),
+            )
 
-                response = client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.7,
-                    ),
-                )
+            def stream_text_generator():
+                first_chunk = True
+                for chunk in response_stream:
+                    # Clear BOTH dots and knowledge banner as soon as token 1 arrives
+                    if first_chunk:
+                        waiting_banner.empty()
+                        first_chunk = False
 
-                reply_text = response.text or "I am refining your route parameters."
-                st.markdown(reply_text)
-                st.session_state.messages.append({"role": "assistant", "content": reply_text})
+                    if getattr(chunk, "text", None):
+                        yield chunk.text
+                    elif getattr(chunk, "candidates", None) and chunk.candidates[0].content:
+                        parts = chunk.candidates[0].content.parts
+                        for p in parts:
+                            if getattr(p, "text", None):
+                                yield p.text
 
-    if len(st.session_state.messages) > 1:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("✨ Finalize Itinerary & Reveal Curated Stays", type="primary", use_container_width=True):
-            with st.spinner("Synthesizing final day-by-day itinerary..."):
-                dialogue_digest = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
-                extraction_prompt = f"Create an authentic, structured tour itinerary based on this conversation:\n\n{dialogue_digest}"
-                try:
-                    plan = generate_itinerary_content(extraction_prompt)
-                    st.session_state.itinerary_data = plan
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Generation error: {e}")
+            full_reply = st.write_stream(stream_text_generator())
+
+        st.session_state.messages.append({"role": "assistant", "content": full_reply})
+        st.rerun()
 
 else:
     data: TourItinerary = st.session_state.itinerary_data
@@ -657,37 +1034,64 @@ else:
     with col_itinerary:
         st.markdown(f"<h3 style='color: #ffffff;'>🗺️ {data.tour_title} ({data.duration})</h3>", unsafe_allow_html=True)
 
-        for day in data.days:
+        with ThreadPoolExecutor(max_workers=min(len(data.days), 6)) as executor:
+            photos_results = list(executor.map(
+                lambda d: search_key_spot_images(d.place_name, max_results=2), 
+                data.days
+            ))
+
+        all_day_cards_html = []
+
+        for idx, day in enumerate(data.days):
             bullet_items = "".join([f"<li style='color:#f8fafc; margin-bottom:8px;'>✦ {b}</li>" for b in day.bullets])
-            st.markdown(
-                f"""
-            <div class="waypoint-card">
-              <div style="font-size:18px; font-weight:700; color:#ffffff; margin-bottom:8px;">
-                <span class="day-tag">DAY {day.day_number}</span> {day.route_title}
-              </div>
-              <div style="color:#94a3b8; font-size:13px; margin-bottom:12px;">
-                📍 Key Spot: <b style="color:#fde047;">{day.place_name}</b>
-              </div>
-              <ul style="list-style:none; padding-left:0; margin:0;">
-                {bullet_items}
-              </ul>
-            </div>
-            """,
-                unsafe_allow_html=True,
+            spot_photos = photos_results[idx]
+
+            photo_cards = "".join([
+                f'<div class="day-photo-card">'
+                f'<img src="{p["url"]}" alt="{p["caption"]}" loading="lazy" />'
+                f'<div class="photo-tag-pill">📍 {day.place_name}</div>'
+                f'<div class="photo-overlay">📸 {p["caption"]}</div>'
+                f'</div>'
+                for p in spot_photos
+            ])
+
+            single_card = (
+                f'<div class="waypoint-card">'
+                f'<div style="font-size:18px; font-weight:700; color:#ffffff; margin-bottom:4px;">'
+                f'<span class="day-tag">DAY {day.day_number}</span> {day.route_title}'
+                f'</div>'
+                f'<div style="color:#cbd5e1; font-size:13.5px; margin-bottom:10px;">'
+                f'📍 Key Spot: <b style="color:#fde047;">{day.place_name}</b>'
+                f'</div>'
+                f'<div class="day-photo-grid">{photo_cards}</div>'
+                f'<div style="font-size:12.5px; font-weight:700; color:#38bdf8; text-transform:uppercase; margin: 12px 0 6px 0; letter-spacing:0.5px;">'
+                f'Route Highlights & Activities'
+                f'</div>'
+                f'<ul style="list-style:none; padding-left:0; margin:0;">{bullet_items}</ul>'
+                f'</div>'
             )
+            all_day_cards_html.append(single_card)
+
+        combined_itinerary_html = "\n".join(all_day_cards_html)
+        st.markdown(combined_itinerary_html, unsafe_allow_html=True)
 
     with col_stays:
         st.markdown("<h3 style='color: #ffffff;'>🏡 Recommended Stays & Booking</h3>", unsafe_allow_html=True)
-        st.caption("Curated lodges matched to each day's route elevations.")
+        st.caption("Curated lodges matched to each day's route from your live Google Sheet inventory.")
+
+        # Determine actual nights: N Days = N - 1 Nights (last day is drop-off / departure)
+        total_days = len(data.days)
+        stay_days = data.days[:-1] if total_days > 1 else data.days
 
         matched_trip_stays = []
-        for day in data.days:
+        for night_idx, day in enumerate(stay_days, start=1):
             stay_dict = match_stay_for_day(day.place_name, day.route_title)
+            stay_dict["night"] = night_idx
             stay_dict["day"] = day.day_number
             stay_dict["day_place"] = day.place_name
             matched_trip_stays.append(stay_dict)
 
-        if st.button("🎒 Book Complete Tour Package (Stays + Food + Cab)", type="primary", use_container_width=True):
+        if st.button("🎒 Book Complete Tour Package (Stays + Transit)", type="primary", use_container_width=True):
             open_package_booking_dialog(data, matched_trip_stays)
 
         st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 16px 0;'>", unsafe_allow_html=True)
@@ -697,16 +1101,23 @@ else:
                 "image_url",
                 "https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=900&q=80",
             )
+            plan_name = s.get("plan", "EP")
+            p_type = s.get("pricing_type", "Per Room")
+            rate_val = s.get("rate", 1500)
+            rate_suffix = "/head" if p_type == "Per Head" else "/room"
+
             st.markdown(
                 f"""
             <div class="stay-card">
               <div class="stay-img-wrap">
                 <img src="{img_src}" alt="{s['stay_name']}" loading="lazy" />
-                <div class="stay-img-badge">Day {s['day']} Night • {s['day_place']}</div>
+                <div class="stay-img-badge">Night {s['night']} • {s['day_place']}</div>
               </div>
               <div class="stay-content">
                 <div style="font-size:17px; font-weight:700; color:#ffffff; margin-bottom:4px;">
                   {s['stay_name']}
+                  <span class="plan-tag">{plan_name} Plan</span>
+                  <span class="pricing-tag">{p_type}</span>
                 </div>
                 <div style="font-size:12px; color:#cbd5e1; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
                   <span style="background:rgba(56,189,248,0.2); color:#38bdf8; padding:2px 8px; border-radius:6px; font-weight:600;">
@@ -714,9 +1125,9 @@ else:
                   </span>
                   <span>{s.get('property_type', 'Retreat')}</span>
                   <b style="color:#fbbf24;">{s.get('rating', '4.8 ★')}</b>
-                  <span style="color:#94a3b8;">({s.get('price_bracket', '₹₹₹')})</span>
+                  <span style="color:#22c55e; font-weight:700; margin-left: auto;">₹{rate_val:,.0f} {rate_suffix}</span>
                 </div>
-                <div style="font-size:13px; color:#94a3b8; line-height:1.45; margin-bottom:12px;">
+                <div style="font-size:13px; color:#cbd5e1; line-height:1.45; margin-bottom:12px;">
                   {s.get('vibe', '')}
                 </div>
               </div>
@@ -726,7 +1137,7 @@ else:
             )
 
             single_stay_inquiry = urllib.parse.quote(
-                f"Hi, I would like to reserve only Day {s['day']} Stay at {s['stay_name']} ({s['day_place']}) for circuit {data.tour_title}."
+                f"Hi, I would like to reserve Night {s['night']} Stay at {s['stay_name']} ({s['day_place']}) on {plan_name} plan for circuit {data.tour_title}."
             )
             wa_stay_link = f"https://api.whatsapp.com/send?phone={AGENCY_WHATSAPP_NUMBER}&text={single_stay_inquiry}"
             st.markdown(
