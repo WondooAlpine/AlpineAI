@@ -946,7 +946,8 @@ if not st.session_state.itinerary_data:
                 unsafe_allow_html=True
             )
 
-            client = genai.Client(api_key=raw_key, http_options={"api_version": "v1beta"})
+            api_key = os.environ.get("GEMINI_API_KEY", "")
+            client = genai.Client(api_key=api_key) if api_key else genai.Client()
 
             # Conversational prompt without Day 1 / Day 2 items
             system_instruction = (
