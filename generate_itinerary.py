@@ -33,7 +33,7 @@ def generate_itinerary_content(prompt_text: str) -> TourItinerary:
     Ensures that stay_location is populated for every night except the final departure day.
     """
     api_key = os.environ.get("GEMINI_API_KEY2", "")
-            client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    client = genai.Client(api_key=api_key) if api_key else genai.Client()
 
     system_instruction = (
         "You are the Lead Expedition Architect at Wondoo Alpine Studio. "
