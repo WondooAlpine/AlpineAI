@@ -32,7 +32,8 @@ def generate_itinerary_content(prompt_text: str) -> TourItinerary:
     Generates a structured TourItinerary object using Gemini with strict JSON schema enforcement.
     Ensures that stay_location is populated for every night except the final departure day.
     """
-    client = genai.Client(api_key="AQ.Ab8RN6KN69fjivBP1Va_DIDsALflFXl3Fds9LYVjFc9mDAb1Vw")
+    api_key = os.environ.get("GEMINI_API_KEY2", "")
+            client = genai.Client(api_key=api_key) if api_key else genai.Client()
 
     system_instruction = (
         "You are the Lead Expedition Architect at Wondoo Alpine Studio. "
