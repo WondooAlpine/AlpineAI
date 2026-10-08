@@ -1,0 +1,35 @@
+{
+  "WONDOO10": {
+    "type": "percent",
+    "value": 10,
+    "max_discount": 2500,
+    "min_order": 10000,
+    "description": "10% off up to ₹2,500 on expeditions",
+    "is_one_time_per_user": true,
+    "max_uses_global": 100,
+    "used_count": 0,
+    "used_by_users": []
+  },
+  "HIMALAYA1500": {
+    "type": "flat",
+    "value": 1500,
+    "max_discount": 1500,
+    "min_order": 12000,
+    "description": "Flat ₹1,500 off on Eastern Himalayan circuits",
+    "is_one_time_per_user": true,
+    "max_uses_global": 50,
+    "used_count": 0,
+    "used_by_users": []
+  },
+  "WELCOME2000": {
+    "type": "flat",
+    "value": 2000,
+    "max_discount": 2000,
+    "min_order": 15000,
+    "description": "One-time welcome gift of ₹2,000 for new explorers",
+    "is_one_time_per_user": true,
+    "max_uses_global": 25,
+    "used_count": 0,
+    "used_by_users": []
+  }
+}
