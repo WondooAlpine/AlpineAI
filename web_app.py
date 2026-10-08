@@ -1289,17 +1289,39 @@ def open_login_dialog():
 # ---------------------------------------------------------------------------
 @st.dialog("🎒 Reserve Complete Expedition Package", width="large")
 def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
+    # 1. Inline Auth Check (Avoids nested dialog calls)
     if not st.session_state.get("user"):
-        st.warning("🔒 Please sign in to book and apply discount coupons.")
-        open_login_dialog()
+        st.markdown("### 🔑 Sign In to Complete Reservation")
+        st.caption("Sign in to unlock exclusive member pricing and redeem ₹2,500 Welcome Credits.")
+
+        name = st.text_input("Full Name*", placeholder="e.g. Rahul Sharma", key="modal_auth_name")
+        email = st.text_input("Email Address*", placeholder="e.g. rahul@example.com", key="modal_auth_email")
+        phone = st.text_input("WhatsApp Number*", placeholder="e.g. 9876543210", key="modal_auth_phone")
+
+        if st.button("Continue to Booking", type="primary", use_container_width=True, key="modal_auth_btn"):
+            if not name.strip() or not email.strip() or not phone.strip():
+                st.error("Please fill in your name, email, and WhatsApp number.")
+                return
+
+            st.session_state.user = {
+                "name": name.strip(),
+                "email": email.strip().lower(),
+                "phone": phone.strip(),
+                "wallet_balance": 2500.0,
+                "member_tier": "Alpine Explorer",
+                "logged_in": True,
+            }
+            st.rerun()
         return
 
+    # 2. Main Booking Flow (proceeds once logged in)
     user = st.session_state.user
     total_days = len(itinerary.days)
     booking_id = f"WND-{uuid.uuid4().hex[:6].upper()}"
 
     st.markdown(f"### **{itinerary.tour_title}** ({itinerary.duration})")
 
+    # --- Traveler Details Inputs ---
     c1, c2, c3 = st.columns([1.2, 1, 1])
     with c1:
         lead_name = st.text_input("Lead Traveler Name*", value=user.get("name", ""))
@@ -1319,6 +1341,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
             ["Bagdogra Airport (IXB)", "New Jalpaiguri Stn (NJP)", "Siliguri Junction", "Gangtok Stand"]
         )
 
+    # Base pricing calculation
     pricing = calculate_dynamic_sheet_quotation(
         matched_stays=matched_stays,
         total_days=total_days,
@@ -1328,6 +1351,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
     )
     base_grand_total = pricing["grand_total"]
 
+    # --- Coupon & Wallet Section ---
     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 15px 0;'>", unsafe_allow_html=True)
     st.markdown("##### **2. Discounts & Alpine Wallet**")
 
@@ -1335,7 +1359,6 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
 
     with col_coupon:
         st.markdown("<div style='font-size:13px; font-weight:700; color:#38bdf8;'>🎟️ Apply Promo Coupon (Max 1)</div>", unsafe_allow_html=True)
-        
         if st.session_state.get("applied_coupon"):
             cur_cpn = st.session_state.applied_coupon
             st.markdown(
@@ -1376,6 +1399,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
         use_wallet = st.checkbox("Redeem Wallet Credits (Up to ₹2,000)", value=st.session_state.get("use_wallet", False))
         st.session_state.use_wallet = use_wallet
 
+    # Deductions Calculation
     coupon_discount = st.session_state.applied_coupon["discount"] if st.session_state.get("applied_coupon") else 0.0
     wallet_deduction = min(float(user.get("wallet_balance", 0)), 2000.0) if use_wallet else 0.0
 
@@ -1383,6 +1407,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
     advance_payable = int(final_total * 0.25)
     per_head_final = int(final_total / max(int(num_heads), 1))
 
+    # --- Fare Summary ---
     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 15px 0;'>", unsafe_allow_html=True)
     st.markdown("##### **3. Final Payable Fare**")
 
@@ -1392,6 +1417,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
     q3.metric("25% Advance Token", f"₹{advance_payable:,.0f}")
     q4.metric("Total Saved", f"₹{coupon_discount + wallet_deduction:,.0f}")
 
+    # Payment QR
     qr_url = generate_upi_qr_url(
         vpa=UPI_VPA,
         payee_name=UPI_PAYEE_NAME,
@@ -1409,6 +1435,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
         """)
         txn_ref = st.text_input("12-digit UPI UTR / Ref #", placeholder="e.g. 427810398412")
 
+    # --- Confirmation Lock ---
     if st.button("🚀 Confirm & Lock Expedition Booking", type="primary", use_container_width=True):
         if not lead_name.strip() or not phone_num.strip():
             st.error("Please provide both Lead Traveler Name and WhatsApp Number.")
@@ -1434,7 +1461,7 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list):
             "coupon_discount": coupon_discount,
             "wallet_redeemed": wallet_deduction,
             "advance_paid": advance_payable,
-            "transaction_utr": txn_ref.strip() if txn_ref.strip() else "PENDING_VERIFICATION"
+            "transaction_utr": txn_ref.strip() if txn_ref.strip() else "PENDING_VERIFICATION",
         }
 
         st.session_state.applied_coupon = None
