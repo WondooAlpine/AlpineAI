@@ -1090,52 +1090,59 @@ st.markdown(
     margin-left: 4px;
   }
   /* ----------------------------------------------------
-     RESPONSIVE MOBILE OVERRIDES (max-width: 768px)
+     RESPONSIVE MOBILE 2-ROW HEADER (<= 768px)
      ---------------------------------------------------- */
   @media (max-width: 768px) {
-    /* 1. Header Command Bar Adjustments */
+    /* 1. Expand the container to comfortably fit 2 rows */
     .modern-app-bar {
-      padding: 10px 12px !important;
-      gap: 8px !important;
-      flex-wrap: nowrap !important;
+      padding: 10px 14px !important;
+      display: flex !important;
+      flex-wrap: wrap !important;
       align-items: center !important;
+      justify-content: space-between !important;
+      gap: 6px 10px !important;
+      height: auto !important;
+      min-height: 72px !important;
     }
 
+    /* Left title lock */
     .bar-left {
+      display: flex !important;
+      align-items: center !important;
       gap: 8px !important;
-      min-width: 0 !important;
       flex: 1 1 auto !important;
+      min-width: 0 !important;
     }
 
     .brand-logo-icon {
       width: 28px !important;
       height: 28px !important;
       min-width: 28px !important;
-      font-size: 14px !important;
+      border-radius: 6px !important;
     }
 
     .brand-logo-icon img {
-      height: 26px !important;
+      height: 24px !important;
       width: auto !important;
+    }
+
+    .brand-text-wrap {
+      display: contents !important; /* Lets title stay on row 1 and subtitle break to row 2 */
     }
 
     .brand-title {
       font-size: 1rem !important;
       white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-      line-height: 1.2 !important;
+      line-height: 1.1 !important;
+      margin: 0 !important;
     }
 
-    /* Subtitle takes up too much vertical space on phones; hide on small screens */
-    .brand-sub {
-      display: none !important;
-    }
-
-    /* Keep telemetry compact */
+    /* Right Telemetry stays locked to the top-right */
     .bar-right-telemetry {
+      display: flex !important;
+      align-items: center !important;
       flex: 0 0 auto !important;
-      gap: 6px !important;
+      margin-left: auto !important;
     }
 
     .status-pill-modern {
@@ -1144,48 +1151,61 @@ st.markdown(
       white-space: nowrap !important;
     }
 
-    /* Hide the extra version tag on mobile to save horizontal space */
     .chip-tag-modern {
       display: none !important;
     }
 
-    /* 2. Bottom Capsule Input Bar Adjustments */
+    /* 2. Subtitle: Drop onto its own full-width row with elegant separator */
+    .brand-sub {
+      display: block !important;
+      width: 100% !important;
+      flex-basis: 100% !important;
+      order: 3 !important;
+      font-size: 10px !important;
+      font-weight: 500 !important;
+      color: #94a3b8 !important;
+      line-height: 1.35 !important;
+      letter-spacing: 0.1px !important;
+      margin-top: 4px !important;
+      padding-top: 5px !important;
+      border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+      white-space: normal !important;
+      text-align: left !important;
+    }
+
+    /* 3. Input Capsule Bar */
     div[data-testid="stChatInput"] {
-      width: 95% !important;
+      width: 100% !important;
+      max-width: 95% !important;
     }
 
     div[data-testid="stChatInput"] > div {
       padding: 4px 8px 4px 38px !important;
     }
 
-    /* Left + icon alignment */
     div[data-testid="stChatInput"] > div::before {
       left: 14px !important;
       font-size: 18px !important;
     }
 
-    /* Space out the textarea so it doesn't collide with the send button */
-    div[data-testid="stChatInput"] textarea {
-      font-size: 13.5px !important;
-      padding: 6px 30px 6px 0 !important;
-    }
-
-    /* Hide the mic indicator on small screens to prevent overlap with the send button */
     div[data-testid="stChatInput"] > div::after {
       display: none !important;
     }
 
-    /* Adjust send button size for mobile */
-    div[data-testid="stChatInput"] button {
-      width: 30px !important;
-      height: 30px !important;
-      min-height: 30px !important;
+    div[data-testid="stChatInput"] textarea {
+      font-size: 13.5px !important;
+      padding: 6px 12px 6px 0 !important;
     }
 
-    /* 3. Disclaimer safety margin above mobile navigation bars */
+    div[data-testid="stChatInput"] button {
+      width: 32px !important;
+      height: 32px !important;
+      min-height: 32px !important;
+    }
+
     .chat-bottom-disclaimer {
       font-size: 10.5px !important;
-      margin-top: 4px !important;
+      margin-top: 6px !important;
       margin-bottom: 8px !important;
     }
   }
