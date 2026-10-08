@@ -1090,90 +1090,98 @@ st.markdown(
     margin-left: 4px;
   }
   /* ----------------------------------------------------
-     RESPONSIVE MOBILE 2-ROW HEADER (<= 768px)
+     RESPONSIVE VERTICAL STACK ON MOBILE (<= 768px)
      ---------------------------------------------------- */
   @media (max-width: 768px) {
-    /* 1. Expand the container to comfortably fit 2 rows */
+    /* 1. Header Card Container */
     .modern-app-bar {
-      padding: 10px 14px !important;
+      padding: 14px 16px !important;
       display: flex !important;
-      flex-wrap: wrap !important;
-      align-items: center !important;
-      justify-content: space-between !important;
-      gap: 6px 10px !important;
+      flex-direction: column !important;
+      align-items: flex-start !important;
+      justify-content: flex-start !important;
+      gap: 10px !important;
       height: auto !important;
-      min-height: 72px !important;
+      min-height: auto !important;
     }
 
-    /* Left title lock */
+    /* 2. Top Line: Logo + Enlarged Title */
     .bar-left {
+      width: 100% !important;
       display: flex !important;
       align-items: center !important;
-      gap: 8px !important;
-      flex: 1 1 auto !important;
-      min-width: 0 !important;
+      gap: 10px !important;
     }
 
     .brand-logo-icon {
-      width: 28px !important;
-      height: 28px !important;
-      min-width: 28px !important;
-      border-radius: 6px !important;
+      width: 36px !important;
+      height: 36px !important;
+      min-width: 36px !important;
+      border-radius: 8px !important;
     }
 
     .brand-logo-icon img {
-      height: 24px !important;
+      height: 32px !important;
       width: auto !important;
     }
 
     .brand-text-wrap {
-      display: contents !important; /* Lets title stay on row 1 and subtitle break to row 2 */
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 2px !important;
+      width: 100% !important;
     }
 
+    /* Bigger Brand Title */
     .brand-title {
-      font-size: 1rem !important;
-      white-space: nowrap !important;
-      line-height: 1.1 !important;
+      font-size: 1.25rem !important;
+      font-weight: 800 !important;
+      line-height: 1.2 !important;
       margin: 0 !important;
+      letter-spacing: -0.3px !important;
+      white-space: normal !important;
     }
 
-    /* Right Telemetry stays locked to the top-right */
+    /* 3. Subtitle directly below Title */
+    .brand-sub {
+      display: block !important;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      color: #94a3b8 !important;
+      line-height: 1.4 !important;
+      letter-spacing: 0.1px !important;
+      margin-top: 2px !important;
+      white-space: normal !important;
+    }
+
+    /* 4. Rest Below That: Telemetry & Status Badges */
     .bar-right-telemetry {
+      width: 100% !important;
       display: flex !important;
       align-items: center !important;
-      flex: 0 0 auto !important;
-      margin-left: auto !important;
+      justify-content: flex-start !important;
+      gap: 8px !important;
+      padding-top: 8px !important;
+      border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+      margin-top: 2px !important;
+      margin-left: 0 !important;
     }
 
     .status-pill-modern {
-      padding: 3px 8px !important;
-      font-size: 9.5px !important;
-      white-space: nowrap !important;
+      padding: 4px 10px !important;
+      font-size: 10.5px !important;
+      font-weight: 600 !important;
+      border-radius: 9999px !important;
     }
 
     .chip-tag-modern {
-      display: none !important;
-    }
-
-    /* 2. Subtitle: Drop onto its own full-width row with elegant separator */
-    .brand-sub {
-      display: block !important;
-      width: 100% !important;
-      flex-basis: 100% !important;
-      order: 3 !important;
+      display: inline-block !important;
       font-size: 10px !important;
-      font-weight: 500 !important;
-      color: #94a3b8 !important;
-      line-height: 1.35 !important;
-      letter-spacing: 0.1px !important;
-      margin-top: 4px !important;
-      padding-top: 5px !important;
-      border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
-      white-space: normal !important;
-      text-align: left !important;
+      padding: 3px 8px !important;
+      border-radius: 6px !important;
     }
 
-    /* 3. Input Capsule Bar */
+    /* 5. Bottom Capsule Input Bar */
     div[data-testid="stChatInput"] {
       width: 100% !important;
       max-width: 95% !important;
