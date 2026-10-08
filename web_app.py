@@ -1836,7 +1836,7 @@ else:
                 )
 
                 api_key = os.environ.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"}) if api_key else genai.Client(http_options={"api_version": "v1beta"})
+                client = genai.Client(api_key=api_key) if api_key else genai.Client()
 
                 system_instruction = (
                     "You are the senior AI Travel Concierge at Wondoo Studio, engaging in a friendly, knowledgeable, and consultative dialogue.\n\n"
