@@ -1089,6 +1089,106 @@ st.markdown(
     font-weight: 700;
     margin-left: 4px;
   }
+  /* ----------------------------------------------------
+     RESPONSIVE MOBILE OVERRIDES (max-width: 768px)
+     ---------------------------------------------------- */
+  @media (max-width: 768px) {
+    /* 1. Header Command Bar Adjustments */
+    .modern-app-bar {
+      padding: 10px 12px !important;
+      gap: 8px !important;
+      flex-wrap: nowrap !important;
+      align-items: center !important;
+    }
+
+    .bar-left {
+      gap: 8px !important;
+      min-width: 0 !important;
+      flex: 1 1 auto !important;
+    }
+
+    .brand-logo-icon {
+      width: 28px !important;
+      height: 28px !important;
+      min-width: 28px !important;
+      font-size: 14px !important;
+    }
+
+    .brand-logo-icon img {
+      height: 26px !important;
+      width: auto !important;
+    }
+
+    .brand-title {
+      font-size: 1rem !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      line-height: 1.2 !important;
+    }
+
+    /* Subtitle takes up too much vertical space on phones; hide on small screens */
+    .brand-sub {
+      display: none !important;
+    }
+
+    /* Keep telemetry compact */
+    .bar-right-telemetry {
+      flex: 0 0 auto !important;
+      gap: 6px !important;
+    }
+
+    .status-pill-modern {
+      padding: 3px 8px !important;
+      font-size: 9.5px !important;
+      white-space: nowrap !important;
+    }
+
+    /* Hide the extra version tag on mobile to save horizontal space */
+    .chip-tag-modern {
+      display: none !important;
+    }
+
+    /* 2. Bottom Capsule Input Bar Adjustments */
+    div[data-testid="stChatInput"] {
+      width: 95% !important;
+    }
+
+    div[data-testid="stChatInput"] > div {
+      padding: 4px 8px 4px 38px !important;
+    }
+
+    /* Left + icon alignment */
+    div[data-testid="stChatInput"] > div::before {
+      left: 14px !important;
+      font-size: 18px !important;
+    }
+
+    /* Space out the textarea so it doesn't collide with the send button */
+    div[data-testid="stChatInput"] textarea {
+      font-size: 13.5px !important;
+      padding: 6px 30px 6px 0 !important;
+    }
+
+    /* Hide the mic indicator on small screens to prevent overlap with the send button */
+    div[data-testid="stChatInput"] > div::after {
+      display: none !important;
+    }
+
+    /* Adjust send button size for mobile */
+    div[data-testid="stChatInput"] button {
+      width: 30px !important;
+      height: 30px !important;
+      min-height: 30px !important;
+    }
+
+    /* 3. Disclaimer safety margin above mobile navigation bars */
+    .chat-bottom-disclaimer {
+      font-size: 10.5px !important;
+      margin-top: 4px !important;
+      margin-bottom: 8px !important;
+    }
+  }
 </style>
 """,
     unsafe_allow_html=True,
