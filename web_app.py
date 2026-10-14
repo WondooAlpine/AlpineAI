@@ -97,32 +97,55 @@ CATALOG_SHEET_ID = os.environ.get(
 DEFAULT_CARD_IMG = "https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=900&q=80"
 
 # ---------------------------------------------------------------------------
-# ASSET ENCODERS (LOGO & HERO BACKGROUND)
+# ASSET ENCODERS (AUTOMATIC MULTI-FOLDER & EXTENSION RESOLVER)
 # ---------------------------------------------------------------------------
-def get_image_base64(image_path: str) -> str:
-    if os.path.exists(image_path):
-        with open(image_path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        ext = os.path.splitext(image_path)[1].replace(".", "").lower()
-        mime = "image/svg+xml" if ext == "svg" else f"image/{ext}"
-        return f"data:{mime};base64,{data}"
-    return "https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=100&q=80"
+def resolve_asset_path(filename: str) -> str:
+    """Checks the root folder, assets/, static/, and case variations."""
+    base_name = os.path.splitext(filename)[0]
+    candidate_dirs = [
+        "", 
+        "assets", 
+        "static", 
+        os.path.join(os.path.dirname(__file__), "assets"),
+        os.path.join(os.path.dirname(__file__), "static")
+    ]
+    candidate_exts = [".png", ".PNG", ".svg", ".SVG", ".jpg", ".jpeg", ".webp"]
+    
+    for c_dir in candidate_dirs:
+        # 1. Exact filename match
+        direct_path = os.path.join(c_dir, filename) if c_dir else filename
+        if os.path.isfile(direct_path):
+            return direct_path
+        
+        # 2. Extension variation match
+        for ext in candidate_exts:
+            variant_path = os.path.join(c_dir, base_name + ext) if c_dir else base_name + ext
+            if os.path.isfile(variant_path):
+                return variant_path
+                
+    return None
 
-LOGO_PATH = "logo.png"
-HERO_BG_PATH = "hero_bg.png"
+def get_image_base64(image_path: str, fallback_url: str = DEFAULT_CARD_IMG) -> str:
+    resolved = resolve_asset_path(image_path)
+    if resolved and os.path.exists(resolved):
+        try:
+            with open(resolved, "rb") as f:
+                data = base64.b64encode(f.read()).decode("utf-8")
+            ext = os.path.splitext(resolved)[1].replace(".", "").lower()
+            mime = "image/svg+xml" if ext == "svg" else f"image/{ext}"
+            return f"data:{mime};base64,{data}"
+        except Exception:
+            return fallback_url
+    return fallback_url
 
-APP_LOGO_SRC = get_image_base64(LOGO_PATH)
-HERO_BG_SRC = get_image_base64(HERO_BG_PATH)
+# Automatic resolution for your logo, hero background, and action icons
+APP_LOGO_SRC = get_image_base64("logo.png")
+HERO_BG_SRC = get_image_base64("hero_bg.png")
 
-AI_ICON_PATH = "icon_ai.png"
-ROUTE_ICON_PATH = "icon_route.png"
-BUDGET_ICON_PATH = "icon_budget.png"
-GUIDE_ICON_PATH = "icon_guide.png"
-
-AI_ICON_SRC = get_image_base64(AI_ICON_PATH) if os.path.exists(AI_ICON_PATH) else "https://img.icons8.com/fluency/96/sparkling--v1.png"
-ROUTE_ICON_SRC = get_image_base64(ROUTE_ICON_PATH) if os.path.exists(ROUTE_ICON_PATH) else "https://img.icons8.com/fluency/96/map-pin.png"
-BUDGET_ICON_SRC = get_image_base64(BUDGET_ICON_PATH) if os.path.exists(BUDGET_ICON_PATH) else "https://img.icons8.com/fluency/96/wallet.png"
-GUIDE_ICON_SRC = get_image_base64(GUIDE_ICON_PATH) if os.path.exists(GUIDE_ICON_PATH) else "https://img.icons8.com/fluency/96/open-book.png"
+AI_ICON_SRC = get_image_base64("icon_ai.png", fallback_url="https://img.icons8.com/fluency/96/sparkling--v1.png")
+ROUTE_ICON_SRC = get_image_base64("icon_route.png", fallback_url="https://img.icons8.com/fluency/96/map-pin.png")
+BUDGET_ICON_SRC = get_image_base64("icon_budget.png", fallback_url="https://img.icons8.com/fluency/96/wallet.png")
+GUIDE_ICON_SRC = get_image_base64("icon_guide.png", fallback_url="https://img.icons8.com/fluency/96/open-book.png")
 
 # ---------------------------------------------------------------------------
 # ROBUST GEMINI STREAMER WITH AUTOMATIC CAPACITY FALLBACK
