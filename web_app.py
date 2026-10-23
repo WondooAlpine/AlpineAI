@@ -498,7 +498,94 @@ def get_or_generate_itinerary(itin_dict: dict, requested_days: int = None) -> To
     return generate_itinerary_content(prompt)
 
 # ---------------------------------------------------------------------------
-# BOOKING MODAL (DEFINED BEFORE VIEW 5 USAGE TO PREVENT NAMEERROR)
+# CENTRALIZED DYNAMIC BUDGET RECALCULATION
+# ---------------------------------------------------------------------------
+def compute_transparent_budget(data: TourItinerary) -> dict:
+    num_heads = int(st.session_state.get("num_travelers", 4))
+    num_rooms = max(1, (num_heads + 1) // 2)
+    total_days = len(data.days)
+    
+    cab_choice = st.session_state.get("selected_cab", "Include Dedicated Cab (Innova/Scorpio)")
+    if "Innova" in cab_choice:
+        cab_daily_rate = 3800
+    elif "Bolero" in cab_choice:
+        cab_daily_rate = 4200
+    else:
+        cab_daily_rate = 0
+    total_cab_cost = cab_daily_rate * total_days
+
+    tier_supplement = ROOM_TIER_PREMIUM_MAP.get(st.session_state.get("selected_room_tier", "Standard Room"), 0)
+    nights_data = resolve_all_stays_for_itinerary(data)
+    
+    if not st.session_state.get("selected_stays"):
+        st.session_state.selected_stays = {}
+        for night_idx, n_info in nights_data.items():
+            if n_info["stays"]:
+                st.session_state.selected_stays[night_idx] = n_info["stays"][0]
+            else:
+                st.session_state.selected_stays[night_idx] = {
+                    "stay_name": f"Curated Stay in {n_info['town']}",
+                    "price_bracket": "2000",
+                    "pricing_type": "Per Head"
+                }
+
+    total_stays_cost = 0
+    for night_idx in sorted(st.session_state.selected_stays.keys()):
+        stay = st.session_state.selected_stays[night_idx]
+        try:
+            raw_p = str(stay.get("price_bracket", 2000)).replace("₹", "").replace(",", "").strip()
+            base_price = float(raw_p)
+        except Exception:
+            base_price = 2000.0
+
+        p_type = str(stay.get("pricing_type", "Per Head")).strip().lower()
+        if "room" in p_type:
+            night_fare = (base_price + tier_supplement) * num_rooms
+        else:
+            night_fare = (base_price + (tier_supplement / 2.0)) * num_heads
+        
+        total_stays_cost += night_fare
+
+    grand_total = total_cab_cost + total_stays_cost
+    per_head = grand_total / max(1, num_heads)
+
+    return {
+        "grand_total": grand_total,
+        "per_head": per_head,
+        "num_heads": num_heads,
+        "num_rooms": num_rooms,
+        "cab_cost": total_cab_cost,
+        "stays_cost": total_stays_cost
+    }
+
+# ---------------------------------------------------------------------------
+# WHATSAPP RESERVATION RECEIPT ENCODER
+# ---------------------------------------------------------------------------
+def format_whatsapp_reservation_receipt(info: dict) -> str:
+    message = (
+        f"🏔️ *WONDOO ALPINE STUDIO — RESERVATION RECEIPT*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ *Booking Ref*: #{info['booking_id']}\n"
+        f"👤 *Lead Traveler*: {info['lead_name']}\n"
+        f"📱 *Phone*: {info['phone']}\n"
+        f"📅 *Departure*: {info['departure_date']}\n"
+        f"🗺️ *Expedition*: {info['circuit']} ({info['duration']})\n"
+        f"👥 *Travelers*: {info['heads']} Adults | {info['rooms']} Rooms\n"
+        f"🚗 *Vehicle*: {info['vehicle'].split('(')[0].strip()}\n"
+        f"🏡 *Room Category*: {info.get('room_tier', 'Standard Room')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *FINANCIAL SUMMARY*\n"
+        f"• Grand Package Fare: ₹{info['grand_total']:,.0f}\n"
+        f"• 25% Advance Token Paid: ₹{info['advance_paid']:,.0f}\n"
+        f"• Balance Due on Arrival: ₹{info['balance_due']:,.0f}\n"
+        f"• Payment Ref / Tx: {info['transaction_utr']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ *Status*: Confirmed & Locked"
+    )
+    return urllib.parse.quote(message)
+
+# ---------------------------------------------------------------------------
+# BOOKING MODAL (DECLARED BEFORE CALL SITES TO ELIMINATE NAMEERROR)
 # ---------------------------------------------------------------------------
 @st.dialog("Expedition Reservation & Token Lock", width="large")
 def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list, selected_room_tier: str = "Standard Room"):
@@ -625,7 +712,6 @@ def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list, s
         clean_email = (lead_email or "guest@wondoo.in").replace('"', '')
         clean_phone = (lead_phone or "9800000000").replace('"', '')
 
-        # Seamless Gateway Form Submit
         checkout_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -665,7 +751,7 @@ var options = {{
         const parentUrl = new URL(window.parent.location.href);
         parentUrl.searchParams.set('paid_tx', response.razorpay_payment_id);
         parentUrl.searchParams.set('book_ref', '{booking_ref}');
-        window.parent.location.assign(target.href);
+        window.parent.location.assign(parentUrl.href);
     }},
     "prefill": {{
         "name": "{clean_name}",
@@ -732,18 +818,23 @@ document.getElementById('rzp-button').onclick = function(e){{
                         st.rerun()
 
 # ---------------------------------------------------------------------------
-# GLOBAL SEARCH & PAYMENT GATEWAY REDIRECT LISTENER
+# GLOBAL ACTION & PAYMENT REDIRECT LISTENER
 # ---------------------------------------------------------------------------
-raw_q = st.query_params.get("q", "")
-if isinstance(raw_q, list):
-    raw_q = raw_q[0] if raw_q else ""
-user_q = str(raw_q).strip()
-
-if user_q:
+if "action" in st.query_params:
+    act = st.query_params["action"]
     st.query_params.clear()
-    st.session_state.messages.append({"role": "user", "content": user_q})
-    st.session_state.active_view = "ai_concierge"
-    st.rerun()
+    if act == "ai":
+        st.session_state.active_view = "ai_concierge"
+        st.rerun()
+    elif act == "explore":
+        st.session_state.active_view = "explore"
+        st.rerun()
+    elif act == "route":
+        st.session_state.active_view = "smart_route"
+        st.rerun()
+    elif act == "budget":
+        st.session_state.active_view = "budget_plan"
+        st.rerun()
 
 if "paid_tx" in st.query_params and "book_ref" in st.query_params:
     tx_id = st.query_params["paid_tx"]
@@ -783,7 +874,7 @@ if "paid_tx" in st.query_params and "book_ref" in st.query_params:
     st.rerun()
 
 # ---------------------------------------------------------------------------
-# RESPONSIVE CUSTOM CSS & HIGH CONTRAST TAB ENFORCEMENT
+# RESPONSIVE CUSTOM CSS & VISIBILITY REPAIRS
 # ---------------------------------------------------------------------------
 st.markdown(
     """<style>
@@ -905,6 +996,175 @@ header[data-testid="stHeader"] {
   margin-bottom: 0px;
 }
 
+/* --------------------------------------------------------------------------
+   STRICT FORM PILL STYLING (FIXES DARK BUTTON & BORDER OUTLINE)
+   -------------------------------------------------------------------------- */
+div[data-testid="stForm"] {
+  border: 1.5px solid rgba(26, 56, 40, 0.16) !important;
+  border-radius: 9999px !important;
+  background: #FFFFFF !important;
+  padding: 5px 8px 5px 18px !important;
+  box-shadow: 0 10px 28px rgba(26, 56, 40, 0.08) !important;
+  max-width: 820px !important;
+  margin: 0 auto 20px auto !important;
+}
+
+div[data-testid="stForm"]:focus-within {
+  border-color: #244E37 !important;
+  box-shadow: 0 12px 34px rgba(36, 78, 55, 0.16) !important;
+}
+
+div[data-testid="stForm"] div[data-testid="stTextInput"] > div > div {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+div[data-testid="stForm"] input {
+  color: #1A3828 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  background: transparent !important;
+  padding: 8px 0 !important;
+}
+
+div[data-testid="stForm"] input::placeholder {
+  color: #3B6149 !important;
+  opacity: 1 !important;
+}
+
+div[data-testid="stForm"] button {
+  background-color: #244E37 !important;
+  color: #FFFFFF !important;
+  border-radius: 50% !important;
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 18px !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(36, 78, 55, 0.25) !important;
+}
+
+div[data-testid="stForm"] button:hover {
+  background-color: #1A3828 !important;
+  transform: scale(1.05) !important;
+}
+
+div[data-testid="stForm"] button p,
+div[data-testid="stForm"] button span {
+  color: #FFFFFF !important;
+}
+
+/* --------------------------------------------------------------------------
+   ORIGINAL SQUARE QUICK ACTION TILES
+   -------------------------------------------------------------------------- */
+.quick-action-grid-wrap {
+  display: grid !important;
+  grid-template-columns: repeat(4, 1fr) !important;
+  gap: 16px !important;
+  width: 100% !important;
+  margin-top: 8px !important;
+}
+
+.square-action-card-tile {
+  background: #FFFFFF !important;
+  border: 1px solid rgba(26, 56, 40, 0.08) !important;
+  border-radius: 24px !important;
+  aspect-ratio: 1 / 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 18px 12px !important;
+  box-shadow: 0 4px 18px rgba(26, 56, 40, 0.04) !important;
+  text-decoration: none !important;
+  color: #1A3828 !important;
+  transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+  cursor: pointer !important;
+  box-sizing: border-box !important;
+}
+
+.square-action-card-tile:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: 0 12px 28px rgba(26, 56, 40, 0.1) !important;
+  border-color: rgba(36, 78, 55, 0.28) !important;
+}
+
+.square-card-icon-bubble {
+  width: 54px !important;
+  height: 54px !important;
+  border-radius: 18px !important;
+  background: #EBF3EC !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-bottom: 12px !important;
+}
+
+.square-card-icon-bubble img {
+  width: 32px !important;
+  height: 32px !important;
+  object-fit: contain !important;
+}
+
+.square-card-title-text {
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-size: 14.5px !important;
+  font-weight: 700 !important;
+  color: #1A3828 !important;
+  text-align: center !important;
+  line-height: 1.25 !important;
+}
+
+.square-card-badge-text {
+  font-size: 11px !important;
+  color: #557461 !important;
+  font-weight: 600 !important;
+  margin-top: 4px !important;
+  text-align: center !important;
+}
+
+/* --------------------------------------------------------------------------
+   HIGH CONTRAST ROOM TIER RADIO BUTTON LABELS (FIXES INVISIBLE TEXT)
+   -------------------------------------------------------------------------- */
+div[data-testid="stRadio"] label,
+div[data-testid="stRadio"] label p,
+div[data-testid="stRadio"] label span,
+div[data-testid="stRadio"] label div {
+  color: #1A3828 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-weight: 700 !important;
+  font-size: 14px !important;
+}
+
+/* --------------------------------------------------------------------------
+   STAY ACTIVE CAPSULE
+   -------------------------------------------------------------------------- */
+.stay-active-capsule {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  background: linear-gradient(135deg, #1A3828 0%, #2E5E3F 100%) !important;
+  color: #FFFFFF !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
+  text-transform: uppercase !important;
+  padding: 9px 18px !important;
+  border-radius: 9999px !important;
+  box-shadow: 0 4px 14px rgba(26, 56, 40, 0.22) !important;
+}
+
 /* DESTINATION CARDS */
 .dest-card-styled {
   position: relative;
@@ -957,73 +1217,7 @@ header[data-testid="stHeader"] {
   font-weight: 700;
 }
 
-/* QUICK ACTION TILES */
-.quick-action-grid-wrap {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  width: 100%;
-  margin-top: 8px;
-}
-
-.square-action-card-tile {
-  background: #FFFFFF;
-  border: 1px solid rgba(26, 56, 40, 0.08);
-  border-radius: 24px;
-  aspect-ratio: 1 / 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 18px 12px;
-  box-shadow: 0 4px 18px rgba(26, 56, 40, 0.04);
-  text-decoration: none !important;
-  color: #1A3828 !important;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
-  cursor: pointer;
-  box-sizing: border-box;
-}
-
-.square-action-card-tile:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 28px rgba(26, 56, 40, 0.1);
-}
-
-.square-card-icon-bubble {
-  width: 54px;
-  height: 54px;
-  border-radius: 18px;
-  background: #EBF3EC;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 12px;
-}
-
-.square-card-icon-bubble img {
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
-}
-
-.square-card-title-text {
-  font-family: 'Plus Jakarta Sans', sans-serif;
-  font-size: 14.5px;
-  font-weight: 700;
-  color: #1A3828;
-  text-align: center;
-}
-
-.square-card-badge-text {
-  font-size: 11px;
-  color: #557461;
-  font-weight: 600;
-  margin-top: 4px;
-}
-
-/* --------------------------------------------------------------------------
-   STREAMLIT TABS HIGH-CONTRAST DARK TEXT (FIXES INVISIBLE WHITE TABS)
-   -------------------------------------------------------------------------- */
+/* STREAMLIT TABS HIGH-CONTRAST DARK TEXT */
 div[data-baseweb="tab-list"] button,
 button[data-baseweb="tab"],
 button[data-testid="stTab"] {
@@ -1109,12 +1303,6 @@ div.stButton > button[kind="secondary"] {
 # ---------------------------------------------------------------------------
 # TOP COMMAND BAR
 # ---------------------------------------------------------------------------
-user_initial = (
-    st.session_state.user["name"][0].upper()
-    if st.session_state.get("user") and st.session_state.user.get("name")
-    else "👤"
-)
-
 col_bar_brand, col_bar_nav = st.columns([3.8, 1.4], gap="small")
 
 with col_bar_brand:
@@ -1165,7 +1353,7 @@ Thank you, <b>{info['lead_name']}</b>. Your expedition package for <b>{info['cir
 💬 Send Booking Summary to WhatsApp
 </a>
 </div>""",
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
     if st.button("✕ Dismiss Notification", key="dismiss_banner"):
         st.session_state.booking_confirmed = None
@@ -1275,6 +1463,123 @@ Frontier mountain zones require state administration permits arranged 24h prior.
 </div>""",
             unsafe_allow_html=True
         )
+
+# VIEW: EXPLORE PLACES CATALOG
+elif st.session_state.get("active_view") == "explore" and not st.session_state.get("itinerary_data"):
+    col_back, _ = st.columns([1.5, 4.5])
+    with col_back:
+        if st.button("← Back to Discover", key="back_from_explore", use_container_width=True):
+            st.session_state.active_view = "home"
+            st.rerun()
+
+    st.markdown(
+        """<div style="margin: 10px 0 20px 0;">
+<div style="font-family:'Playfair Display', serif; font-size: 2.1rem; font-weight:700; color:#1A3828; margin-bottom:4px;">Explore Sanctuaries</div>
+<div style="font-size:14px; color:#557461;">Discover handpicked serene destinations across Bengal, Sikkim, and the Eastern Himalayas.</div>
+</div>""",
+        unsafe_allow_html=True
+    )
+
+    dest_cols = st.columns(3, gap="medium")
+    for idx, d in enumerate(LIVE_ITINERARIES):
+        with dest_cols[idx % 3]:
+            st.markdown(
+                f"""<div class="dest-card-styled">
+<img src="{d['image']}" alt="{d['title']}" onerror="this.src='{DEFAULT_CARD_IMG}'" />
+<div class="dest-scrim-overlay">
+<div>
+<div class="dest-card-title">{d['title'].split('&')[0].strip()}</div>
+<div class="dest-card-sub">{d['sector']} • {d['duration']}</div>
+</div>
+</div>
+</div>""",
+                unsafe_allow_html=True
+            )
+            if st.button(f"Plan {d['title'].split('&')[0].strip()}", key=f"btn_explore_card_{idx}", use_container_width=True):
+                with st.spinner(f"Curating {d['title']} Plan..."):
+                    plan = get_or_generate_itinerary(d)
+                    st.session_state.itinerary_data = plan
+                    st.session_state.active_view = "home"
+                    st.rerun()
+
+# VIEW: SMART ROUTE CATALOG
+elif st.session_state.get("active_view") == "smart_route" and not st.session_state.get("itinerary_data"):
+    col_back, _ = st.columns([1.5, 4.5])
+    with col_back:
+        if st.button("← Back to Discover", key="back_from_sr", use_container_width=True):
+            st.session_state.active_view = "home"
+            st.rerun()
+
+    st.markdown(
+        """<div style="margin: 10px 0 20px 0;">
+<div style="font-family:'Playfair Display', serif; font-size: 2.1rem; font-weight:700; color:#1A3828; margin-bottom:4px;">Smart Verified Routes</div>
+<div style="font-size:14px; color:#557461;">Optimized mountain elevation transitions with verified vehicle transit times.</div>
+</div>""",
+        unsafe_allow_html=True
+    )
+
+    grid_cols = st.columns(2, gap="medium")
+    for idx, itin in enumerate(LIVE_ITINERARIES):
+        with grid_cols[idx % 2]:
+            highlights_li = "".join([f"<li style='margin-bottom:4px;'>✦ {h}</li>" for h in itin.get("highlights", [])])
+            st.markdown(
+                f"""<div style="background:#FFFFFF; border:1px solid rgba(26,56,40,0.08); border-radius:20px; padding:16px; margin-bottom:14px;">
+<div style="font-size:11px; text-transform:uppercase; color:#2E5E3F; font-weight:700;">{itin['sector']} • {itin['duration']}</div>
+<div style="font-family:'Playfair Display', serif; font-size:18px; font-weight:700; color:#1A3828; margin:4px 0;">{itin['title']}</div>
+<div style="font-size:12.5px; color:#557461; margin-bottom:10px;">Altitude: {itin['elevation']}</div>
+<ul style="list-style:none; padding-left:0; margin:0 0 12px 0; font-size:13px; color:#314B3B;">{highlights_li}</ul>
+</div>""",
+                unsafe_allow_html=True
+            )
+            if st.button(f"Generate Route ({itin['duration']})", key=f"btn_sr_{idx}", type="primary", use_container_width=True):
+                with st.spinner("Generating route pacing..."):
+                    plan = get_or_generate_itinerary(itin)
+                    st.session_state.itinerary_data = plan
+                    st.session_state.active_view = "home"
+                    st.rerun()
+
+# VIEW: BUDGET PLAN CATALOG
+elif st.session_state.get("active_view") == "budget_plan" and not st.session_state.get("itinerary_data"):
+    col_back, _ = st.columns([1.5, 4.5])
+    with col_back:
+        if st.button("← Back to Discover", key="back_from_bp", use_container_width=True):
+            st.session_state.active_view = "home"
+            st.rerun()
+
+    st.markdown(
+        """<div style="margin: 10px 0 20px 0;">
+<div style="font-family:'Playfair Display', serif; font-size: 2.1rem; font-weight:700; color:#1A3828; margin-bottom:4px;">Fixed Budget Packages</div>
+<div style="font-size:14px; color:#557461;">Direct transparent quotes including dedicated transport, meals, and stays.</div>
+</div>""",
+        unsafe_allow_html=True
+    )
+
+    pkg_cols = st.columns(2, gap="medium")
+    for idx, pkg in enumerate(LIVE_PACKAGES):
+        with pkg_cols[idx % 2]:
+            features_li = "".join([f"<li style='margin-bottom:5px;'>✔ {f}</li>" for f in pkg.get("features", [])])
+            st.markdown(
+                f"""<div style="background:#FFFFFF; border:1px solid rgba(26,56,40,0.08); border-radius:20px; padding:18px; margin-bottom:14px;">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+    <div>
+      <div style="font-family:'Playfair Display', serif; font-size:18px; font-weight:700; color:#1A3828;">{pkg['title']}</div>
+      <div style="font-size:13px; color:#557461; font-weight:600;">{pkg['duration']}</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:20px; font-weight:800; color:#244E37;">{pkg['price_per_head']}</div>
+      <div style="font-size:11px; color:#688574;">per head</div>
+    </div>
+  </div>
+  <div style="font-size:12px; color:#314B3B; margin-bottom:12px;">🏡 {pkg['stay_type']} • 🚗 {pkg['transit']}</div>
+  <ul style="list-style:none; padding-left:0; margin:0 0 14px 0; font-size:13px; color:#314B3B;">{features_li}</ul>
+</div>""",
+                unsafe_allow_html=True
+            )
+            wa_pkg_text = urllib.parse.quote(f"Hi Wondoo Team, I would like to reserve '{pkg['title']}' ({pkg['duration']}).")
+            st.markdown(
+                f'<a href="https://api.whatsapp.com/send?phone={AGENCY_WHATSAPP_NUMBER}&text={wa_pkg_text}" target="_blank" style="display:block; text-align:center; background:#244E37; color:#FFFFFF; font-size:13px; font-weight:700; padding:10px; border-radius:9999px; text-decoration:none; margin-top:-6px; margin-bottom:18px;">💬 Inquire via WhatsApp</a>',
+                unsafe_allow_html=True
+            )
 
 # VIEW 1: DEDICATED AI CONCIERGE CHAT PAGE
 elif st.session_state.get("active_view") == "ai_concierge" and not st.session_state.get("itinerary_data"):
@@ -1388,200 +1693,73 @@ elif not st.session_state.get("itinerary_data"):
 </div>"""
     st.markdown(hero_markup, unsafe_allow_html=True)
 
+    search_prompts = [
+        "Ask Alpine — Where would you like to wander?",
+        "Plan a 5-day Sikkim Silk Route expedition?",
+        "Find heritage mountain lodges in Darjeeling?",
+        "Explore living root bridges & canyons in Meghalaya?",
+        "Curate a scenic 4-day tour with a dedicated cab?"
+    ]
+
     components.html(
-        """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: transparent;
-    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    overflow: hidden;
-  }
-  .search-container {
-    width: 100%;
-    max-width: 820px;
-  }
-  .pill-wrapper {
-    width: 100%;
-    background: #FFFFFF;
-    border: 1.5px solid rgba(26, 56, 40, 0.12);
-    border-radius: 9999px;
-    display: flex;
-    align-items: center;
-    padding: 6px 8px 6px 20px;
-    box-shadow: 0 10px 28px rgba(26, 56, 40, 0.07);
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-  }
-  .pill-wrapper:focus-within {
-    border-color: #244E37;
-    box-shadow: 0 12px 34px rgba(36, 78, 55, 0.15);
-  }
-  .search-icon {
-    font-size: 18px;
-    margin-right: 12px;
-    user-select: none;
-    line-height: 1;
-  }
-  input {
-    flex: 1;
-    border: none;
-    outline: none;
-    background: transparent;
-    font-family: inherit;
-    font-size: 14.5px;
-    font-weight: 500;
-    color: #1A3828;
-  }
-  input::placeholder {
-    color: #688574;
-    opacity: 0.95;
-    transition: opacity 0.15s ease;
-  }
-  .send-btn {
-    background-color: #244E37;
-    border: none;
-    outline: none;
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(36, 78, 55, 0.22);
-    transition: transform 0.15s ease, background-color 0.15s ease;
-  }
-  .send-btn:hover {
-    background-color: #1A3828;
-    transform: scale(1.05);
-  }
-  .send-btn svg {
-    width: 17px;
-    height: 17px;
-    fill: none;
-    stroke: #FFFFFF;
-    stroke-width: 2.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-</style>
-</head>
-<body>
-  <div class="search-container">
-    <div class="pill-wrapper">
-      <div class="search-icon">🔍</div>
-      <input type="text" id="alpineInput" placeholder="Ask Alpine — Where would you like to wander?" autocomplete="off" />
-      <button type="button" class="send-btn" id="sendBtn" title="Search">
-        <svg viewBox="0 0 24 24">
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-          <polyline points="12 5 19 12 12 19"></polyline>
-        </svg>
-      </button>
-    </div>
-  </div>
+        f"""<script>
+        const phrases = {json.dumps(search_prompts)};
+        let pIdx = 0;
+        let cIdx = phrases[0].length;
+        let isDeleting = true;
 
-  <script>
-    function doSubmit() {
-      const input = document.getElementById('alpineInput');
-      let val = input.value.trim();
-      
-      if (!val) {
-        val = input.getAttribute('placeholder') || '';
-        val = val.replace(/^Ask Alpine —\\s*/i, '').replace(/[?]/g, '').trim();
-      }
-      if (!val) return;
-
-      try {
-        const target = new URL(window.parent.location.href);
-        target.searchParams.set('q', val);
-        window.parent.location.assign(target.href);
-      } catch (err) {
-        try {
-          const target = new URL(window.top.location.href);
-          target.searchParams.set('q', val);
-          window.top.location.assign(target.href);
-        } catch (err2) {
-          const origin = window.location.ancestorOrigins ? window.location.ancestorOrigins[0] : window.location.origin;
-          const target = new URL(origin);
-          target.searchParams.set('q', val);
-          window.open(target.href, '_top');
-        }
-      }
-    }
-
-    document.getElementById('sendBtn').addEventListener('click', doSubmit);
-    document.getElementById('alpineInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        doSubmit();
-      }
-    });
-
-    const phrases = [
-      "Ask Alpine — Where would you like to wander?",
-      "Plan a 5-day Sikkim Silk Route expedition?",
-      "Find heritage mountain lodges in Darjeeling?",
-      "Explore living root bridges & canyons in Meghalaya?",
-      "Curate a scenic 4-day tour with a dedicated cab?"
-    ];
-
-    let phraseIdx = 0;
-    let charIdx = phrases[0].length;
-    let isDeleting = true;
-    let isUserTyping = false;
-    const inputElem = document.getElementById('alpineInput');
-
-    inputElem.addEventListener('focus', () => { isUserTyping = true; });
-    inputElem.addEventListener('blur', () => {
-      if (inputElem.value.trim().length === 0) {
-        isUserTyping = false;
-      }
-    });
-    inputElem.addEventListener('input', () => {
-      isUserTyping = inputElem.value.length > 0;
-    });
-
-    function typeLoop() {
-      if (!isUserTyping && inputElem.value.length === 0) {
-        const currentPhrase = phrases[phraseIdx];
-        if (isDeleting) {
-          inputElem.setAttribute('placeholder', currentPhrase.substring(0, charIdx));
-          charIdx--;
-          if (charIdx < 0) {
-            isDeleting = false;
-            phraseIdx = (phraseIdx + 1) % phrases.length;
-            charIdx = 0;
-            setTimeout(typeLoop, 350);
-            return;
-          }
-        } else {
-          inputElem.setAttribute('placeholder', currentPhrase.substring(0, charIdx));
-          charIdx++;
-          if (charIdx > currentPhrase.length) {
-            isDeleting = true;
-            setTimeout(typeLoop, 2200);
-            return;
-          }
-        }
-      }
-      const speed = isDeleting ? 25 : 50;
-      setTimeout(typeLoop, speed);
-    }
-    setTimeout(typeLoop, 2200);
-  </script>
-</body>
-</html>""",
-        height=76,
+        function runTypewriter() {{
+            try {{
+                const input = window.parent.document.querySelector('input[aria-label="home_search_bar_input"]');
+                if (input && document.activeElement !== input && input.value.trim() === "") {{
+                    const cur = phrases[pIdx];
+                    if (isDeleting) {{
+                        input.setAttribute("placeholder", cur.substring(0, cIdx));
+                        cIdx--;
+                        if (cIdx < 0) {{
+                            isDeleting = false;
+                            pIdx = (pIdx + 1) % phrases.length;
+                            cIdx = 0;
+                            setTimeout(runTypewriter, 350);
+                            return;
+                        }}
+                    }} else {{
+                        input.setAttribute("placeholder", cur.substring(0, cIdx));
+                        cIdx++;
+                        if (cIdx > cur.length) {{
+                            isDeleting = true;
+                            setTimeout(runTypewriter, 2200);
+                            return;
+                        }}
+                    }}
+                }}
+            }} catch(e) {{}}
+            setTimeout(runTypewriter, isDeleting ? 25 : 50);
+        }}
+        setTimeout(runTypewriter, 1800);
+        </script>""",
+        height=0,
+        width=0
     )
+
+    with st.form("home_search_capsule_form", clear_on_submit=False):
+        c_icon, c_input, c_btn = st.columns([0.05, 0.88, 0.07], gap="small")
+        with c_icon:
+            st.markdown("<div style='font-size:18px; line-height:42px; text-align:center;'>🔍</div>", unsafe_allow_html=True)
+        with c_input:
+            home_query = st.text_input(
+                "home_search_bar_input",
+                placeholder=search_prompts[0],
+                label_visibility="collapsed"
+            )
+        with c_btn:
+            submitted = st.form_submit_button("➔")
+
+    if submitted:
+        val = home_query.strip() if home_query else search_prompts[0].replace("Ask Alpine — ", "").replace("?", "").strip()
+        st.session_state.messages.append({"role": "user", "content": val})
+        st.session_state.active_view = "ai_concierge"
+        st.rerun()
 
     st.markdown(
         """<div style="display:flex; justify-content:space-between; align-items:center; margin: 20px 4px 12px 4px;">
@@ -1619,6 +1797,7 @@ elif not st.session_state.get("itinerary_data"):
         unsafe_allow_html=True
     )
 
+    # RESTORED 4-SQUARE ACTION CARDS
     square_tiles_html = f"""<div class="quick-action-grid-wrap">
   <a href="?action=ai" target="_self" class="square-action-card-tile">
     <div class="square-card-icon-bubble"><img src="{AI_ICON_SRC}" alt="AI" /></div>
@@ -1659,7 +1838,7 @@ else:
     with c_title_center:
         st.markdown("<div style='text-align:center; font-family:\"Playfair Display\", serif; font-size:1.45rem; font-weight:700; color:#1A3828;'>Your Itinerary</div>", unsafe_allow_html=True)
 
-    # CONSTRAINED THUMBNAIL (140x95 - PREVENTS IMAGE BLOWOUT)
+    # STRICT 140x95 CONSTRAINED THUMBNAIL
     primary_spot = getattr(data.days[0], "stay_location", None) or data.days[0].place_name
     coords = get_coords_for_place(primary_spot)
     weather_data = fetch_live_weather(coords[0], coords[1])
@@ -1743,32 +1922,124 @@ else:
                     st.session_state.selected_cab = cab_name
                     st.rerun()
 
-    # STAY TAB
+    # STAY TAB (RESTORED FULL DESIGN & HIGH CONTRAST)
     elif st.session_state.itin_tab == "Stay":
         nights_data = resolve_all_stays_for_itinerary(data)
+
+        st.markdown(
+            textwrap.dedent("""
+            <div style="margin-bottom: 14px;">
+              <div style="font-family:'Playfair Display', serif; font-size:1.35rem; font-weight:700; color:#1A3828;">
+                🏡 Handpicked Verified Stays
+              </div>
+              <div style="font-size:13px; color:#557461;">
+                Curated heritage properties and sanctuaries. Your live expedition fare updates automatically.
+              </div>
+            </div>
+            """).strip(),
+            unsafe_allow_html=True
+        )
+
         room_tier_list = list(ROOM_TIER_PREMIUM_MAP.keys())
         cur_tier_idx = room_tier_list.index(st.session_state.selected_room_tier) if st.session_state.selected_room_tier in room_tier_list else 0
 
-        chosen_tier_radio = st.radio("Select Room Tier", room_tier_list, index=cur_tier_idx, horizontal=True)
+        chosen_tier_radio = st.radio(
+            "Select Room Tier",
+            room_tier_list,
+            index=cur_tier_idx,
+            horizontal=True,
+            key="room_tier_radio_selector"
+        )
         if chosen_tier_radio != st.session_state.selected_room_tier:
             st.session_state.selected_room_tier = chosen_tier_radio
             st.rerun()
 
+        st.markdown("<hr style='border:none; border-top:1px solid rgba(26,56,40,0.08); margin:12px 0 18px 0;'>", unsafe_allow_html=True)
+
         for night_idx, n_info in nights_data.items():
-            st.markdown(f"**Night {night_idx} — {n_info['town']}**")
-            current_selected = st.session_state.selected_stays.get(night_idx, {}).get("stay_name", "")
-            for s_idx, s in enumerate(n_info["stays"]):
-                is_selected = (s["stay_name"] == current_selected)
-                c_c, c_b = st.columns([4.4, 1.4], gap="small")
-                with c_c:
-                    st.markdown(f"🏡 **{s['stay_name']}** ({s['property_type']}) — ₹{s['price_bracket']} {s.get('pricing_type', 'Per Head')}")
-                with c_b:
-                    if is_selected:
-                        st.markdown('<div class="stay-active-capsule">✦ Reserved</div>', unsafe_allow_html=True)
-                    else:
-                        if st.button("Select Stay", key=f"btn_pick_stay_{night_idx}_{s_idx}", use_container_width=True):
-                            st.session_state.selected_stays[night_idx] = s
-                            st.rerun()
+            avail_count = len(n_info["stays"])
+            badge_color = "#1A3828" if avail_count > 0 else "#688574"
+            count_label = f"{avail_count} Curated Sanctuaries Available" if avail_count > 0 else "Allocated at Checkout"
+
+            night_header_html = textwrap.dedent(f"""
+            <div style="margin: 20px 0 12px 0; display:flex; align-items:center; justify-content:space-between;">
+              <div>
+                <span style="background:{badge_color}; color:#FFFFFF; padding:4px 12px; border-radius:9999px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Night {night_idx}</span>
+                <span style="font-family:'Playfair Display', serif; font-size:1.25rem; font-weight:700; color:#1A3828; margin-left:10px;">{n_info['town']}</span>
+              </div>
+              <div style="font-size:12px; color:#557461; font-weight:600;">{count_label}</div>
+            </div>
+            """).strip()
+            st.markdown(night_header_html, unsafe_allow_html=True)
+
+            current_night_selected = st.session_state.selected_stays.get(night_idx, {})
+            current_selected_name = current_night_selected.get("stay_name", "")
+
+            if n_info["stays"]:
+                for s_idx, s in enumerate(n_info["stays"]):
+                    is_selected = (s["stay_name"] == current_selected_name)
+                    stay_img = s.get("image", DEFAULT_CARD_IMG)
+                    
+                    try:
+                        base_bracket = float(str(s.get('price_bracket', 2000)).replace("₹", "").replace(",", "").strip())
+                    except Exception:
+                        base_bracket = 2000.0
+                    
+                    eff_price = base_bracket + ROOM_TIER_PREMIUM_MAP.get(st.session_state.selected_room_tier, 0)
+                    price_val = f"₹{eff_price:,.0f}"
+
+                    card_border = "2px solid #244E37; background:#F7FAF8;" if is_selected else "1px solid rgba(26,56,40,0.08); background:#FFFFFF;"
+                    tier_label = st.session_state.selected_room_tier.split('(')[0].strip()
+
+                    col_card, col_action = st.columns([4.4, 1.4], gap="medium")
+                    
+                    with col_card:
+                        stay_card_html = textwrap.dedent(f"""
+                        <div style="{card_border} border-radius:20px; padding:16px 18px; margin-bottom:12px; box-shadow:0 4px 16px rgba(26,56,40,0.04); display:flex; gap:16px; align-items:center;">
+                          <img src="{stay_img}" style="width:110px; height:88px; min-width:110px; border-radius:14px; object-fit:cover; flex-shrink:0;" onerror="this.src='{DEFAULT_CARD_IMG}'" />
+                          <div style="flex:1; min-width:0;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                              <div>
+                                <div style="font-family:'Playfair Display', serif; font-size:17.5px; font-weight:700; color:#1A3828; line-height:1.2;">{s['stay_name']}</div>
+                                <div style="font-size:12px; color:#557461; margin:3px 0 6px 0;">
+                                  🏡 <b>{s['property_type']}</b> • ⛰️ {s['altitude']} • <span style="color:#2E5E3F; font-weight:700;">{tier_label}</span>
+                                </div>
+                              </div>
+                              <div style="text-align:right;">
+                                <div style="font-size:18px; font-weight:800; color:#244E37;">{price_val}</div>
+                                <div style="font-size:10.5px; color:#688574; font-weight:600;">{s.get('pricing_type', 'Per Head')}</div>
+                              </div>
+                            </div>
+                            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:2px;">
+                              <span style="background:#E2EDE4; color:#1A3828; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700;">{s['rating']}</span>
+                              <span style="background:#E2EDE4; color:#1A3828; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600;">☕ Mountain View</span>
+                              <span style="background:#E2EDE4; color:#1A3828; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600;">🚿 Verified Partner</span>
+                            </div>
+                          </div>
+                        </div>
+                        """).strip()
+                        st.markdown(stay_card_html, unsafe_allow_html=True)
+
+                    with col_action:
+                        st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+                        if is_selected:
+                            st.markdown(
+                                '<div class="stay-active-capsule">✦ Reserved</div>',
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            if st.button("Select Property →", key=f"btn_pick_stay_{night_idx}_{s_idx}", use_container_width=True):
+                                st.session_state.selected_stays[night_idx] = s
+                                st.rerun()
+            else:
+                st.markdown(
+                    textwrap.dedent(f"""
+                    <div style="background:#FFFFFF; border:1px dashed rgba(26,56,40,0.2); border-radius:18px; padding:14px 18px; margin-bottom:12px; color:#557461; font-size:13px;">
+                      📍 Verified boutique lodge / homestay in <b>{n_info['town']}</b> allocated automatically at checkout.
+                    </div>
+                    """).strip(),
+                    unsafe_allow_html=True
+                )
 
     # Dynamic Telemetry Card Render
     pricing_result = compute_transparent_budget(data)
