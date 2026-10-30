@@ -128,20 +128,22 @@ if "messages" not in st.session_state:
     ]
 
 # ---------------------------------------------------------------------------
-# CONFIGURATION & SECRETS
+# CONFIGURATION & SECRETS (CRASH-PROOF FALLBACKS)
 # ---------------------------------------------------------------------------
-BOOKING_WEBHOOK_URL = os.environ.get(
-    "BOOKING_WEBHOOK_URL",
-    "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_DEPLOYMENT_ID/exec",
-)
-AGENCY_WHATSAPP_NUMBER = os.environ.get("AGENCY_WHATSAPP_NUMBER", "919800000000")
-UPI_VPA = os.environ.get("UPI_VPA", "wondooexpeditions@oksbi")
-UPI_PAYEE_NAME = os.environ.get("UPI_PAYEE_NAME", "Wondoo Alpine Studio")
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "rzp_test_1DP5mmOlF5G5ag")
-CATALOG_SHEET_ID = os.environ.get(
-    "CATALOG_SHEET_ID",
-    "1fbDtDmXR2QS15V3oY6dAIW64gcqMui3vTMrndxsOYVQ",
-)
+def get_secret(key: str, default: str = "") -> str:
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+BOOKING_WEBHOOK_URL = get_secret("BOOKING_WEBHOOK_URL", "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_DEPLOYMENT_ID/exec")
+AGENCY_WHATSAPP_NUMBER = get_secret("AGENCY_WHATSAPP_NUMBER", "919800000000")
+UPI_VPA = get_secret("UPI_VPA", "wondooexpeditions@oksbi")
+UPI_PAYEE_NAME = get_secret("UPI_PAYEE_NAME", "Wondoo Alpine Studio")
+RAZORPAY_KEY_ID = get_secret("RAZORPAY_KEY_ID", "rzp_test_1DP5mmOlF5G5ag")
+CATALOG_SHEET_ID = get_secret("CATALOG_SHEET_ID", "1fbDtDmXR2QS15V3oY6dAIW64gcqMui3vTMrndxsOYVQ")
 
 DEFAULT_CARD_IMG = "https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=900&q=80"
 
@@ -152,8 +154,26 @@ ROOM_TIER_PREMIUM_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# ASSET ENCODERS
+# ASSET ENCODERS & URL SANITIZATION
 # ---------------------------------------------------------------------------
+def sanitize_image_url(url: str, fallback_url: str = DEFAULT_CARD_IMG) -> str:
+    if not url or not isinstance(url, str):
+        return fallback_url
+    url = url.strip()
+    if not url.startswith("http"):
+        return fallback_url
+
+    if "images.unsplash.com" in url and "?" not in url:
+        return f"{url}?auto=format&fit=crop&w=900&q=80"
+
+    if "drive.google.com" in url:
+        file_id_match = re.search(r"/d/([a-zA-Z0-9_-]+)", url) or re.search(r"id=([a-zA-Z0-9_-]+)", url)
+        if file_id_match:
+            file_id = file_id_match.group(1)
+            return f"https://lh3.googleusercontent.com/d/{file_id}"
+            
+    return url
+
 def resolve_asset_path(filename: str) -> str:
     base_name = os.path.splitext(filename)[0]
     candidate_dirs = [
@@ -267,7 +287,7 @@ def get_coords_for_place(place_name: str, fallback=(27.0410, 88.2663)):
 @st.cache_data(ttl=600)
 def fetch_live_weather(lat: float, lon: float) -> dict:
     try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}¤t=temperature_2m,weather_code"
         res = requests.get(url, timeout=4).json()
         current = res.get("current", {})
         temp = current.get("temperature_2m", "--")
@@ -346,10 +366,7 @@ DEFAULT_FALLBACK_STAYS = [
 
 @st.cache_data(ttl=60)
 def load_stays_raw_from_sheet(sheet_id: str) -> List[Dict[str, Any]]:
-    resolved_id = sheet_id
-    if "CATALOG_SHEET_ID" in os.environ:
-        resolved_id = os.environ["CATALOG_SHEET_ID"]
-
+    resolved_id = CATALOG_SHEET_ID
     candidate_urls = [
         f"https://docs.google.com/spreadsheets/d/{resolved_id}/gviz/tq?tqx=out:csv&sheet=Stays",
         f"https://docs.google.com/spreadsheets/d/{resolved_id}/export?format=csv&gid=0",
@@ -365,6 +382,8 @@ def load_stays_raw_from_sheet(sheet_id: str) -> List[Dict[str, Any]]:
                     name = str(row.get("stay_name", "")).strip()
                     if not name or name.lower() == "nan":
                         continue
+                    raw_img = row.get("image", DEFAULT_CARD_IMG)
+                    clean_img = sanitize_image_url(str(raw_img), fallback_url=DEFAULT_CARD_IMG)
                     records.append({
                         "town_keys": str(row.get("town_keys", "")).lower().strip(),
                         "stay_name": name,
@@ -373,7 +392,7 @@ def load_stays_raw_from_sheet(sheet_id: str) -> List[Dict[str, Any]]:
                         "rating": str(row.get("rating", "4.8 ★")).strip(),
                         "price_bracket": str(row.get("price_bracket", "2000")).strip().replace("₹", "").replace(",", ""),
                         "pricing_type": str(row.get("pricing_type", "Per Head")).strip(),
-                        "image": str(row.get("image", DEFAULT_CARD_IMG)).strip() if "image" in df.columns and str(row.get("image")).startswith("http") else DEFAULT_CARD_IMG
+                        "image": clean_img
                     })
                 if records:
                     return records
@@ -466,28 +485,51 @@ DEFAULT_FALLBACK_PACKAGES = [
 
 @st.cache_data(ttl=60)
 def load_itineraries_from_sheet(sheet_id: str) -> List[Dict[str, Any]]:
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Itineraries"
-    try:
-        df = pd.read_csv(url)
-        df.columns = [str(col).strip().lower() for col in df.columns]
-        itineraries = []
-        for _, row in df.iterrows():
-            title = str(row.get("title", "")).strip()
-            if not title or title.lower() == "nan":
-                continue
-            itineraries.append({
-                "title": title,
-                "duration": str(row.get("duration", "4 Days • 3 Nights")).strip(),
-                "sector": str(row.get("sector", "")).strip(),
-                "elevation": str(row.get("elevation", "")).strip(),
-                "image": str(row.get("image", DEFAULT_CARD_IMG)).strip(),
-                "highlights": [h.strip() for h in str(row.get("highlights", "")).split(";") if h.strip()],
-                "default_prompt": str(row.get("default_prompt", f"Plan an authentic {title} tour.")).strip(),
-                "predefined_plan_json": None
-            })
-        return itineraries if itineraries else DEFAULT_FALLBACK_ITINERARIES
-    except Exception:
-        return DEFAULT_FALLBACK_ITINERARIES
+    resolved_id = CATALOG_SHEET_ID
+    candidate_urls = [
+        f"https://docs.google.com/spreadsheets/d/{resolved_id}/gviz/tq?tqx=out:csv&sheet=Itineraries",
+        f"https://docs.google.com/spreadsheets/d/{resolved_id}/export?format=csv&gid=0",
+    ]
+
+    for url in candidate_urls:
+        try:
+            resp = requests.get(url, timeout=6)
+            if resp.status_code == 200 and resp.text:
+                df = pd.read_csv(StringIO(resp.text))
+                df.columns = [str(col).strip().lower().replace(" ", "_") for col in df.columns]
+                
+                if "title" in df.columns:
+                    itineraries = []
+                    for _, row in df.iterrows():
+                        title = str(row.get("title", "")).strip()
+                        if not title or title.lower() == "nan":
+                            continue
+
+                        raw_img = (
+                            row.get("image") or 
+                            row.get("image_url") or 
+                            row.get("photo") or 
+                            row.get("cover_image") or 
+                            ""
+                        )
+                        clean_img = sanitize_image_url(str(raw_img), fallback_url=DEFAULT_CARD_IMG)
+
+                        itineraries.append({
+                            "title": title,
+                            "duration": str(row.get("duration", "4 Days • 3 Nights")).strip(),
+                            "sector": str(row.get("sector", "Himalayan Region")).strip(),
+                            "elevation": str(row.get("elevation", "Scenic Elevation")).strip(),
+                            "image": clean_img,
+                            "highlights": [h.strip() for h in str(row.get("highlights", "")).split(";") if h.strip() and h.lower() != "nan"],
+                            "default_prompt": str(row.get("default_prompt", f"Plan an authentic {title} tour.")).strip(),
+                            "predefined_plan_json": None
+                        })
+                    if itineraries:
+                        return itineraries
+        except Exception:
+            continue
+
+    return DEFAULT_FALLBACK_ITINERARIES
 
 LIVE_ITINERARIES = load_itineraries_from_sheet(CATALOG_SHEET_ID)
 LIVE_PACKAGES = DEFAULT_FALLBACK_PACKAGES
@@ -585,7 +627,7 @@ def format_whatsapp_reservation_receipt(info: dict) -> str:
     return urllib.parse.quote(message)
 
 # ---------------------------------------------------------------------------
-# BOOKING MODAL (DECLARED BEFORE CALL SITES TO ELIMINATE NAMEERROR)
+# BOOKING MODAL
 # ---------------------------------------------------------------------------
 @st.dialog("Expedition Reservation & Token Lock", width="large")
 def open_package_booking_dialog(itinerary: TourItinerary, matched_stays: list, selected_room_tier: str = "Standard Room"):
@@ -997,21 +1039,71 @@ header[data-testid="stHeader"] {
 }
 
 /* --------------------------------------------------------------------------
-   STRICT FORM PILL STYLING (FIXES DARK BUTTON & BORDER OUTLINE)
+   STRICT FORM PILL STYLING - ABSOLUTE ROW LOCK ACROSS MOBILE & DESKTOP
    -------------------------------------------------------------------------- */
 div[data-testid="stForm"] {
   border: 1.5px solid rgba(26, 56, 40, 0.16) !important;
   border-radius: 9999px !important;
   background: #FFFFFF !important;
-  padding: 5px 8px 5px 18px !important;
-  box-shadow: 0 10px 28px rgba(26, 56, 40, 0.08) !important;
+  padding: 0 8px 0 16px !important;
+  box-shadow: 0 8px 24px rgba(26, 56, 40, 0.08) !important;
   max-width: 820px !important;
   margin: 0 auto 20px auto !important;
+  height: 54px !important;
+  min-height: 54px !important;
+  max-height: 54px !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
 }
 
 div[data-testid="stForm"]:focus-within {
   border-color: #244E37 !important;
   box-shadow: 0 12px 34px rgba(36, 78, 55, 0.16) !important;
+}
+
+/* Force Streamlit internal vertical block to be an inline horizontal flex row */
+div[data-testid="stForm"] div[data-testid="stVerticalBlock"],
+div[data-testid="stForm"] [data-testid="stVerticalBlock"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+}
+
+/* First element: Text Input container takes remaining width */
+div[data-testid="stForm"] [data-testid="stVerticalBlock"] > div:first-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Second element: Submit Button container takes fixed circle dimensions */
+div[data-testid="stForm"] [data-testid="stVerticalBlock"] > div:last-child {
+  flex: 0 0 38px !important;
+  width: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
+  height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+div[data-testid="stForm"] div[data-testid="stTextInput"] {
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 div[data-testid="stForm"] div[data-testid="stTextInput"] > div > div {
@@ -1021,45 +1113,63 @@ div[data-testid="stForm"] div[data-testid="stTextInput"] > div > div {
   padding: 0 !important;
 }
 
-div[data-testid="stForm"] input {
+/* Input element with magnifying glass embedded directly via SVG background */
+div[data-testid="stForm"] input[aria-label="home_search_bar_input"] {
   color: #1A3828 !important;
   font-family: 'Plus Jakarta Sans', sans-serif !important;
-  font-size: 15px !important;
+  font-size: 14.5px !important;
   font-weight: 600 !important;
-  background: transparent !important;
-  padding: 8px 0 !important;
+  background-color: transparent !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23376E4B' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: 2px center !important;
+  background-size: 18px 18px !important;
+  padding: 0 10px 0 32px !important;
+  height: 44px !important;
+  line-height: 44px !important;
+  border: none !important;
+  outline: none !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
 }
 
 div[data-testid="stForm"] input::placeholder {
-  color: #3B6149 !important;
+  color: #4A6E57 !important;
   opacity: 1 !important;
 }
 
+/* Circular Green Submit Button */
 div[data-testid="stForm"] button {
   background-color: #244E37 !important;
   color: #FFFFFF !important;
   border-radius: 50% !important;
-  width: 40px !important;
-  height: 40px !important;
-  min-width: 40px !important;
-  max-width: 40px !important;
+  width: 38px !important;
+  height: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
   padding: 0 !important;
+  margin: 0 !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  font-size: 18px !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
   border: none !important;
-  box-shadow: 0 4px 12px rgba(36, 78, 55, 0.25) !important;
+  box-shadow: 0 3px 10px rgba(36, 78, 55, 0.25) !important;
+  cursor: pointer !important;
 }
 
 div[data-testid="stForm"] button:hover {
   background-color: #1A3828 !important;
-  transform: scale(1.05) !important;
+  transform: scale(1.04) !important;
 }
 
 div[data-testid="stForm"] button p,
 div[data-testid="stForm"] button span {
   color: #FFFFFF !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
 }
 
 /* --------------------------------------------------------------------------
@@ -1131,8 +1241,15 @@ div[data-testid="stForm"] button span {
   text-align: center !important;
 }
 
+@media (max-width: 768px) {
+  .quick-action-grid-wrap {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+}
+
 /* --------------------------------------------------------------------------
-   HIGH CONTRAST ROOM TIER RADIO BUTTON LABELS (FIXES INVISIBLE TEXT)
+   HIGH CONTRAST ROOM TIER RADIO BUTTON LABELS
    -------------------------------------------------------------------------- */
 div[data-testid="stRadio"] label,
 div[data-testid="stRadio"] label p,
@@ -1423,7 +1540,7 @@ if st.session_state.get("active_view") == "user_space":
     </div>
   </div>
   <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid rgba(26,56,40,0.06); padding-top:12px; margin-top:8px;">
-    <div>{permit_tag} &nbsp; <span style="background:#EBF3EC; color:#244E37; font-weight:700; font-size:11px; padding:3px 9px; border-radius:6px;">✦ Locked & Active</span></div>
+    <div>{permit_tag}   <span style="background:#EBF3EC; color:#244E37; font-weight:700; font-size:11px; padding:3px 9px; border-radius:6px;">✦ Locked & Active</span></div>
     <div style="font-size:12px; color:#557461;">Chauffeur details dispatch 24h prior to arrival.</div>
   </div>
 </div>""",
@@ -1483,9 +1600,10 @@ elif st.session_state.get("active_view") == "explore" and not st.session_state.g
     dest_cols = st.columns(3, gap="medium")
     for idx, d in enumerate(LIVE_ITINERARIES):
         with dest_cols[idx % 3]:
+            card_img = sanitize_image_url(d.get("image"), fallback_url=DEFAULT_CARD_IMG)
             st.markdown(
                 f"""<div class="dest-card-styled">
-<img src="{d['image']}" alt="{d['title']}" onerror="this.src='{DEFAULT_CARD_IMG}'" />
+<img src="{card_img}" alt="{d['title']}" onerror="this.src='{DEFAULT_CARD_IMG}'" />
 <div class="dest-scrim-overlay">
 <div>
 <div class="dest-card-title">{d['title'].split('&')[0].strip()}</div>
@@ -1521,13 +1639,17 @@ elif st.session_state.get("active_view") == "smart_route" and not st.session_sta
     grid_cols = st.columns(2, gap="medium")
     for idx, itin in enumerate(LIVE_ITINERARIES):
         with grid_cols[idx % 2]:
+            img_src = sanitize_image_url(itin.get("image"), fallback_url=DEFAULT_CARD_IMG)
             highlights_li = "".join([f"<li style='margin-bottom:4px;'>✦ {h}</li>" for h in itin.get("highlights", [])])
             st.markdown(
-                f"""<div style="background:#FFFFFF; border:1px solid rgba(26,56,40,0.08); border-radius:20px; padding:16px; margin-bottom:14px;">
-<div style="font-size:11px; text-transform:uppercase; color:#2E5E3F; font-weight:700;">{itin['sector']} • {itin['duration']}</div>
-<div style="font-family:'Playfair Display', serif; font-size:18px; font-weight:700; color:#1A3828; margin:4px 0;">{itin['title']}</div>
-<div style="font-size:12.5px; color:#557461; margin-bottom:10px;">Altitude: {itin['elevation']}</div>
-<ul style="list-style:none; padding-left:0; margin:0 0 12px 0; font-size:13px; color:#314B3B;">{highlights_li}</ul>
+                f"""<div style="background:#FFFFFF; border:1px solid rgba(26,56,40,0.08); border-radius:20px; overflow:hidden; box-shadow:0 4px 18px rgba(26,56,40,0.04); margin-bottom:14px;">
+  <img src="{img_src}" style="width:100%; height:180px; min-height:180px; object-fit:cover; display:block;" onerror="this.onerror=null;this.src='{DEFAULT_CARD_IMG}';" />
+  <div style="padding:16px;">
+    <div style="font-size:11px; text-transform:uppercase; color:#2E5E3F; font-weight:700;">{itin['sector']} • {itin['duration']}</div>
+    <div style="font-family:'Playfair Display', serif; font-size:18px; font-weight:700; color:#1A3828; margin:4px 0;">{itin['title']}</div>
+    <div style="font-size:12.5px; color:#557461; margin-bottom:10px;">Altitude: {itin['elevation']}</div>
+    <ul style="list-style:none; padding-left:0; margin:0 0 12px 0; font-size:13px; color:#314B3B;">{highlights_li}</ul>
+  </div>
 </div>""",
                 unsafe_allow_html=True
             )
@@ -1682,7 +1804,7 @@ elif st.session_state.get("active_view") == "ai_concierge" and not st.session_st
         st.session_state.messages.append({"role": "assistant", "content": full_reply})
         st.rerun()
 
-# VIEW 4: PRIMARY HOME SCREEN
+# VIEW 4: PRIMARY HOME SCREEN (LOCKED HORIZONTAL CAPSULE PILL)
 elif not st.session_state.get("itinerary_data"):
 
     hero_markup = f"""<div class="hero-illustrated-scene" style="background-image: url('{HERO_BG_SRC}');">
@@ -1742,18 +1864,14 @@ elif not st.session_state.get("itinerary_data"):
         width=0
     )
 
+    # SINGLE CONTAINER FORM - NO COLUMNS, NO MOBILE STACKING
     with st.form("home_search_capsule_form", clear_on_submit=False):
-        c_icon, c_input, c_btn = st.columns([0.05, 0.88, 0.07], gap="small")
-        with c_icon:
-            st.markdown("<div style='font-size:18px; line-height:42px; text-align:center;'>🔍</div>", unsafe_allow_html=True)
-        with c_input:
-            home_query = st.text_input(
-                "home_search_bar_input",
-                placeholder=search_prompts[0],
-                label_visibility="collapsed"
-            )
-        with c_btn:
-            submitted = st.form_submit_button("➔")
+        home_query = st.text_input(
+            "home_search_bar_input",
+            placeholder=search_prompts[0],
+            label_visibility="collapsed"
+        )
+        submitted = st.form_submit_button("➔")
 
     if submitted:
         val = home_query.strip() if home_query else search_prompts[0].replace("Ask Alpine — ", "").replace("?", "").strip()
@@ -1772,8 +1890,9 @@ elif not st.session_state.get("itinerary_data"):
     dest_cols = st.columns(3, gap="medium")
     for idx, d in enumerate(LIVE_ITINERARIES[:3]):
         with dest_cols[idx]:
+            card_img = sanitize_image_url(d.get("image"), fallback_url=DEFAULT_CARD_IMG)
             card_html = f"""<div class="dest-card-styled">
-<img src="{d['image']}" alt="{d['title']}" onerror="this.src='{DEFAULT_CARD_IMG}'" />
+<img src="{card_img}" alt="{d['title']}" onerror="this.onerror=null;this.src='{DEFAULT_CARD_IMG}';" />
 <div class="dest-scrim-overlay">
 <div>
 <div class="dest-card-title">{d['title'].split('&')[0].strip()}</div>
@@ -1797,7 +1916,7 @@ elif not st.session_state.get("itinerary_data"):
         unsafe_allow_html=True
     )
 
-    # RESTORED 4-SQUARE ACTION CARDS
+    # 4-SQUARE ACTION BUTTON TILES
     square_tiles_html = f"""<div class="quick-action-grid-wrap">
   <a href="?action=ai" target="_self" class="square-action-card-tile">
     <div class="square-card-icon-bubble"><img src="{AI_ICON_SRC}" alt="AI" /></div>
@@ -1838,11 +1957,11 @@ else:
     with c_title_center:
         st.markdown("<div style='text-align:center; font-family:\"Playfair Display\", serif; font-size:1.45rem; font-weight:700; color:#1A3828;'>Your Itinerary</div>", unsafe_allow_html=True)
 
-    # STRICT 140x95 CONSTRAINED THUMBNAIL
     primary_spot = getattr(data.days[0], "stay_location", None) or data.days[0].place_name
     coords = get_coords_for_place(primary_spot)
     weather_data = fetch_live_weather(coords[0], coords[1])
 
+    # STRICT 140x95 CONSTRAINED THUMBNAIL
     st.markdown(
         f"""<div style="display:flex; align-items:center; justify-content:space-between; gap:20px; margin: 12px 0 16px 0; width:100%;">
   <div style="flex:1; min-width:0;">
@@ -1886,6 +2005,7 @@ else:
     if st.session_state.itin_tab == "Itinerary":
         for idx, day in enumerate(data.days):
             spot_img = photos_results[idx][0]["url"] if (idx < len(photos_results) and photos_results[idx]) else DEFAULT_CARD_IMG
+            spot_img = sanitize_image_url(spot_img, fallback_url=DEFAULT_CARD_IMG)
             col_rail, col_card, col_thumb = st.columns([0.6, 6.0, 1.4], gap="small")
             with col_rail:
                 st.markdown(
@@ -1922,7 +2042,7 @@ else:
                     st.session_state.selected_cab = cab_name
                     st.rerun()
 
-    # STAY TAB (RESTORED FULL DESIGN & HIGH CONTRAST)
+    # STAY TAB
     elif st.session_state.itin_tab == "Stay":
         nights_data = resolve_all_stays_for_itinerary(data)
 
@@ -1978,7 +2098,7 @@ else:
             if n_info["stays"]:
                 for s_idx, s in enumerate(n_info["stays"]):
                     is_selected = (s["stay_name"] == current_selected_name)
-                    stay_img = s.get("image", DEFAULT_CARD_IMG)
+                    stay_img = sanitize_image_url(s.get("image", DEFAULT_CARD_IMG), fallback_url=DEFAULT_CARD_IMG)
                     
                     try:
                         base_bracket = float(str(s.get('price_bracket', 2000)).replace("₹", "").replace(",", "").strip())
