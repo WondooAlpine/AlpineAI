@@ -1,3 +1,8 @@
+# ===========================================================================
+# WONDOO ALPINE STUDIO - PRIMARY APPLICATION SCRIPT
+# Version: v1.3-UNIFIED-TOPBAR-CAPSULE
+# ===========================================================================
+
 import os
 import glob
 import json
@@ -128,7 +133,7 @@ if "messages" not in st.session_state:
     ]
 
 # ---------------------------------------------------------------------------
-# CONFIGURATION & SECRETS (CRASH-PROOF FALLBACKS)
+# CONFIGURATION & SECRETS
 # ---------------------------------------------------------------------------
 def get_secret(key: str, default: str = "") -> str:
     try:
@@ -144,6 +149,7 @@ UPI_VPA = get_secret("UPI_VPA", "wondooexpeditions@oksbi")
 UPI_PAYEE_NAME = get_secret("UPI_PAYEE_NAME", "Wondoo Alpine Studio")
 RAZORPAY_KEY_ID = get_secret("RAZORPAY_KEY_ID", "rzp_test_1DP5mmOlF5G5ag")
 CATALOG_SHEET_ID = get_secret("CATALOG_SHEET_ID", "1fbDtDmXR2QS15V3oY6dAIW64gcqMui3vTMrndxsOYVQ")
+OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY", "")
 
 DEFAULT_CARD_IMG = "https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=900&q=80"
 
@@ -208,7 +214,7 @@ def get_image_base64(image_path: str, fallback_url: str = DEFAULT_CARD_IMG) -> s
             return fallback_url
     return fallback_url
 
-APP_LOGO_SRC = get_image_base64("logo.png")
+APP_LOGO_SRC = get_image_base64("logo.png", fallback_url="https://img.icons8.com/fluency/96/mountain.png")
 HERO_BG_SRC = get_image_base64("hero_bg.png")
 
 AI_ICON_SRC = get_image_base64("icon_ai.png", fallback_url="https://img.icons8.com/fluency/96/sparkling--v1.png")
@@ -217,28 +223,95 @@ BUDGET_ICON_SRC = get_image_base64("icon_budget.png", fallback_url="https://img.
 GUIDE_ICON_SRC = get_image_base64("icon_guide.png", fallback_url="https://img.icons8.com/fluency/96/open-book.png")
 
 # ---------------------------------------------------------------------------
-# GEMINI STREAMER
+# RESILIENT DUAL-ENGINE AI STREAMER (GEMINI -> OPENROUTER FALLBACK)
 # ---------------------------------------------------------------------------
-PRIMARY_MODEL = "gemini-2.0-flash"
-BACKUP_MODEL = "gemini-1.5-flash"
+PRIMARY_GEMINI = "gemini-2.0-flash"
+BACKUP_GEMINI = "gemini-1.5-flash"
+OPENROUTER_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct",
+    "deepseek/deepseek-chat",
+    "google/gemini-2.0-flash-exp:free"
+]
 
-def stream_gemini_with_fallback(client, contents, system_instruction):
-    candidate_models = [PRIMARY_MODEL, BACKUP_MODEL]
-    for model_name in candidate_models:
+def stream_openrouter_api(messages_payload: list, system_instruction: str):
+    api_key = OPENROUTER_API_KEY or os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        yield "*(System Notice: Gemini API failed and no OpenRouter API Key was found in secrets.toml)*"
+        return
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://wondoo.in",
+        "X-Title": "Wondoo Alpine Studio",
+    }
+
+    formatted_msgs = [{"role": "system", "content": system_instruction}]
+    for m in messages_payload:
+        formatted_msgs.append({"role": m["role"], "content": m["content"]})
+
+    for model_name in OPENROUTER_MODELS:
+        payload = {
+            "model": model_name,
+            "messages": formatted_msgs,
+            "stream": True,
+            "temperature": 0.35,
+        }
         try:
-            return client.models.generate_content_stream(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.35,
-                    max_output_tokens=2048,
-                ),
+            res = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=12
             )
+            if res.status_code == 200:
+                for line in res.iter_lines():
+                    if line:
+                        decoded = line.decode("utf-8").strip()
+                        if decoded.startswith("data: ") and decoded != "data: [DONE]":
+                            chunk = json.loads(decoded[6:])
+                            token = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if token:
+                                yield token
+                return
         except Exception:
-            if model_name != candidate_models[-1]:
+            continue
+
+    yield "I encountered a connectivity glitch contacting both Gemini and OpenRouter. Please try again shortly."
+
+def stream_ai_conversation_with_fallback(gemini_client, conversation_messages: list, system_instruction: str):
+    if gemini_client:
+        contents = [
+            types.Content(
+                role="user" if m["role"] == "user" else "model",
+                parts=[types.Part.from_text(text=m["content"])]
+            )
+            for m in conversation_messages
+        ]
+        for g_model in [PRIMARY_GEMINI, BACKUP_GEMINI]:
+            try:
+                stream = gemini_client.models.generate_content_stream(
+                    model=g_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.35,
+                        max_output_tokens=2048,
+                    ),
+                )
+                for chunk in stream:
+                    if getattr(chunk, "text", None):
+                        yield chunk.text
+                    elif getattr(chunk, "candidates", None) and chunk.candidates[0].content:
+                        for p in chunk.candidates[0].content.parts:
+                            if getattr(p, "text", None):
+                                yield p.text
+                return
+            except Exception:
                 continue
-            raise
+
+    yield from stream_openrouter_api(conversation_messages, system_instruction)
 
 # ---------------------------------------------------------------------------
 # TIME & TELEMETRY
@@ -877,6 +950,9 @@ if "action" in st.query_params:
     elif act == "budget":
         st.session_state.active_view = "budget_plan"
         st.rerun()
+    elif act == "userspace":
+        st.session_state.active_view = "user_space"
+        st.rerun()
 
 if "paid_tx" in st.query_params and "book_ref" in st.query_params:
     tx_id = st.query_params["paid_tx"]
@@ -941,59 +1017,120 @@ header[data-testid="stHeader"] {
   padding-right: 1.2rem !important;
 }
 
-/* TOP COMMAND APP BAR */
-.editorial-app-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 18px;
-  background: #FFFFFF;
-  border-radius: 22px;
-  border: 1px solid rgba(26, 56, 40, 0.06);
-  box-shadow: 0 4px 18px rgba(26, 56, 40, 0.04);
-  margin-bottom: 16px;
+/* --------------------------------------------------------------------------
+   LAYOUT A: UNIFIED TOP CAPSULE APP BAR
+   -------------------------------------------------------------------------- */
+.unified-top-bar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  background: #FFFFFF !important;
+  border: 1.5px solid rgba(26, 56, 40, 0.1) !important;
+  border-radius: 9999px !important;
+  padding: 8px 12px 8px 18px !important;
+  box-shadow: 0 4px 20px rgba(26, 56, 40, 0.05) !important;
+  margin-bottom: 18px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
 }
 
-.bar-brand-wrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.brand-section {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  min-width: 0 !important;
 }
 
-.bar-logo-img {
-  height: 36px;
-  width: auto;
-  border-radius: 8px;
+.brand-logo {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 8px !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
 }
 
-.bar-title-text {
-  font-family: 'Playfair Display', serif;
-  font-size: 1.35rem;
-  font-weight: 700;
-  color: #1A3828;
-  margin: 0;
-  line-height: 1.1;
+.brand-text {
+  display: flex !important;
+  flex-direction: column !important;
 }
 
-.bar-title-text span {
-  color: #376E4B;
-  font-style: italic;
+.brand-title {
+  font-family: 'Playfair Display', serif !important;
+  font-size: 1.28rem !important;
+  font-weight: 700 !important;
+  color: #1A3828 !important;
+  line-height: 1.15 !important;
+  white-space: nowrap !important;
 }
 
-.bar-sub-text {
-  font-size: 11px;
-  color: #557461;
-  font-weight: 500;
+.brand-title span {
+  font-style: italic !important;
+  color: #376E4B !important;
 }
 
-.bar-telemetry-pill {
-  font-size: 12px;
-  font-weight: 700;
-  color: #557461;
-  background: #F4F7F4;
-  padding: 6px 14px;
-  border-radius: 9999px;
-  border: 1px solid rgba(26, 56, 40, 0.06);
+.brand-sub {
+  font-size: 11px !important;
+  color: #557461 !important;
+  font-weight: 500 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.actions-section {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  flex-shrink: 0 !important;
+}
+
+.telemetry-tag {
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  color: #376E4B !important;
+  background: #F4F7F4 !important;
+  padding: 6px 14px !important;
+  border-radius: 9999px !important;
+  border: 1px solid rgba(26, 56, 40, 0.08) !important;
+  white-space: nowrap !important;
+}
+
+.myspace-pill-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  background: #244E37 !important;
+  color: #FFFFFF !important;
+  font-size: 12.5px !important;
+  font-weight: 700 !important;
+  padding: 7px 18px !important;
+  border-radius: 9999px !important;
+  text-decoration: none !important;
+  box-shadow: 0 3px 10px rgba(36, 78, 55, 0.2) !important;
+  transition: transform 0.15s ease, background 0.15s ease !important;
+  white-space: nowrap !important;
+}
+
+.myspace-pill-btn:hover {
+  background: #1A3828 !important;
+  transform: scale(1.03) !important;
+}
+
+@media (max-width: 768px) {
+  .brand-sub {
+    display: none !important;
+  }
+  .unified-top-bar {
+    padding: 6px 8px 6px 14px !important;
+  }
+  .telemetry-tag {
+    padding: 5px 10px !important;
+    font-size: 10.5px !important;
+  }
+  .myspace-pill-btn {
+    padding: 6px 14px !important;
+    font-size: 11.5px !important;
+  }
 }
 
 /* HERO SCENE */
@@ -1418,37 +1555,29 @@ div.stButton > button[kind="secondary"] {
 )
 
 # ---------------------------------------------------------------------------
-# TOP COMMAND BAR
+# TOP COMMAND BAR (UNIFIED CAPSULE BAR - LAYOUT A)
 # ---------------------------------------------------------------------------
-col_bar_brand, col_bar_nav = st.columns([3.8, 1.4], gap="small")
+user_space_active = (st.session_state.active_view == "user_space")
+btn_action_target = "home" if user_space_active else "userspace"
+btn_label = "✦ Home" if user_space_active else "👤 My Space"
+btn_bg_style = "background: #1A3828; border: 1px solid rgba(255,255,255,0.2);" if user_space_active else "background: #244E37;"
 
-with col_bar_brand:
-    st.markdown(
-        f"""<div class="editorial-app-bar" style="margin-bottom:0; padding:10px 16px;">
-<div class="bar-brand-wrap">
-<img src="{APP_LOGO_SRC}" class="bar-logo-img" alt="Logo" />
-<div>
-<div class="bar-title-text">Wondoo <span>Alpine Studio</span></div>
-<div class="bar-sub-text">Autonomous Circuit Architect • Curated Mountain Stays • Brochure Studio</div>
+unified_top_bar_html = f"""
+<div class="unified-top-bar">
+  <div class="brand-section">
+    <img src="{APP_LOGO_SRC}" class="brand-logo" alt="Logo" />
+    <div class="brand-text">
+      <div class="brand-title">Wondoo <span>Alpine Studio</span></div>
+      <div class="brand-sub">Autonomous Circuit Architect • Curated Mountain Stays • Brochure Studio</div>
+    </div>
+  </div>
+  <div class="actions-section">
+    <div class="telemetry-tag">● {period_label}</div>
+    <a href="?action={btn_action_target}" target="_self" class="myspace-pill-btn" style="{btn_bg_style}">{btn_label}</a>
+  </div>
 </div>
-</div>
-</div>""",
-        unsafe_allow_html=True
-    )
-
-with col_bar_nav:
-    c_tel, c_usr = st.columns([1.5, 1.2], gap="small")
-    with c_tel:
-        st.markdown(f"<div class=\"bar-telemetry-pill\" style=\"margin-top:12px; text-align:center;\">● {period_label}</div>", unsafe_allow_html=True)
-    with c_usr:
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        user_space_active = (st.session_state.active_view == "user_space")
-        btn_profile_label = "✦ Home" if user_space_active else f"👤 My Space"
-        if st.button(btn_profile_label, key="btn_top_toggle_userspace", use_container_width=True, type="primary" if user_space_active else "secondary"):
-            st.session_state.active_view = "home" if user_space_active else "user_space"
-            st.rerun()
-
-st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+"""
+st.markdown(unified_top_bar_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # CONFIRMATION BANNER
@@ -1703,7 +1832,7 @@ elif st.session_state.get("active_view") == "budget_plan" and not st.session_sta
                 unsafe_allow_html=True
             )
 
-# VIEW 1: DEDICATED AI CONCIERGE CHAT PAGE
+# VIEW 1: DEDICATED AI CONCIERGE CHAT PAGE (REPLY FIRST -> RECOMMEND SECOND)
 elif st.session_state.get("active_view") == "ai_concierge" and not st.session_state.get("itinerary_data"):
     col_back, _ = st.columns([1.5, 4.5])
     with col_back:
@@ -1719,12 +1848,38 @@ elif st.session_state.get("active_view") == "ai_concierge" and not st.session_st
         unsafe_allow_html=True
     )
 
+    # 1. RENDER EXISTING CONVERSATION MESSAGES FIRST
     for msg in st.session_state.messages:
         role = msg["role"]
         avatar = "👤" if role == "user" else "🌿"
         with st.chat_message(role, avatar=avatar):
             st.markdown(msg["content"])
 
+    # 2. IF USER JUST SUBMITTED A MESSAGE, STREAM ASSISTANT REPLY IMMEDIATELY
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+        with st.chat_message("assistant", avatar="🌿"):
+            api_key = get_secret("GEMINI_API_KEY", "")
+            client = genai.Client(api_key=api_key) if api_key else None
+
+            pkg_context = "\n".join([f"- {p['title']} ({p['duration']}): {p['price_per_head']}/head" for p in LIVE_PACKAGES])
+            itin_context = "\n".join([f"- {it['title']} ({it['duration']} in {it['sector']})" for it in LIVE_ITINERARIES])
+            system_instruction = (
+                "You are the senior AI Travel Concierge at Wondoo Alpine Studio.\n"
+                f"AVAILABLE FIXED PACKAGES:\n{pkg_context}\n"
+                f"AVAILABLE CUSTOM ITINERARIES:\n{itin_context}\n"
+                "First, directly answer the traveler's inquiry with professional mountain expertise. "
+                "Keep answers engaging, concise, and advise on optimal duration, high passes, and seasonal conditions. "
+                "Let the traveler know that verified packages and catalog routes are matched below for instant booking."
+            )
+
+            full_reply = st.write_stream(
+                stream_ai_conversation_with_fallback(client, st.session_state.messages, system_instruction)
+            )
+
+        st.session_state.messages.append({"role": "assistant", "content": full_reply})
+        st.rerun()
+
+    # 3. CONTEXT MATCHING: RENDER MATCHED PACKAGES & ITINERARIES BELOW THE REPLY
     last_user_query = ""
     for m in reversed(st.session_state.messages):
         if m["role"] == "user":
@@ -1732,18 +1887,30 @@ elif st.session_state.get("active_view") == "ai_concierge" and not st.session_st
             break
 
     suggested_packages = []
+    suggested_itineraries = []
+
     if last_user_query:
+        clean_terms = [w.strip() for w in re.split(r'[,/\s\-()]+', last_user_query) if len(w.strip()) >= 4]
+        
+        # Match Fixed Packages
         for pkg in LIVE_PACKAGES:
             title_norm = pkg["title"].lower()
-            if any(term in last_user_query for term in ["sikkim", "silk route", "gangtok", "pelling", "zuluk"]) and "sikkim" in title_norm:
-                suggested_packages.append(pkg)
-            elif any(term in last_user_query for term in ["darjeeling", "kalimpong", "ghoom"]) and "darjeeling" in title_norm:
-                suggested_packages.append(pkg)
+            if any(term in title_norm or term in ["sikkim", "silk", "darjeeling", "kalimpong", "zuluk"] for term in clean_terms):
+                if pkg not in suggested_packages:
+                    suggested_packages.append(pkg)
+                    
+        # Match Sheet Itineraries
+        for itin in LIVE_ITINERARIES:
+            t_norm = (itin["title"] + " " + itin["sector"]).lower()
+            if any(term in t_norm for term in clean_terms):
+                if itin not in suggested_itineraries:
+                    suggested_itineraries.append(itin)
 
+    # Render Matched Fixed Packages Below Reply
     if suggested_packages:
-        st.markdown("<div style='font-size:13px; font-weight:700; color:#2E5E3F; margin:14px 0 8px 4px;'>🎯 Matched Fixed Tour Packages</div>", unsafe_allow_html=True)
-        p_cols = st.columns(len(suggested_packages), gap="small")
-        for p_idx, pkg in enumerate(suggested_packages):
+        st.markdown("<div style='font-size:13.5px; font-weight:700; color:#2E5E3F; margin:16px 0 10px 4px;'>🎯 Recommended Fixed Packages</div>", unsafe_allow_html=True)
+        p_cols = st.columns(min(len(suggested_packages), 2), gap="small")
+        for p_idx, pkg in enumerate(suggested_packages[:2]):
             with p_cols[p_idx]:
                 features_html = "".join([f"<li style='margin-bottom:3px;'>✔ {f}</li>" for f in pkg.get("features", [])[:3]])
                 st.markdown(
@@ -1767,41 +1934,34 @@ elif st.session_state.get("active_view") == "ai_concierge" and not st.session_st
                         st.session_state.active_view = "home"
                         st.rerun()
 
+    # Render Matched Itineraries from Sheet Below Reply
+    if suggested_itineraries:
+        st.markdown("<div style='font-size:13.5px; font-weight:700; color:#2E5E3F; margin:16px 0 10px 4px;'>🗺️ Matched Itinerary Plans from Catalog</div>", unsafe_allow_html=True)
+        it_cols = st.columns(min(len(suggested_itineraries), 2), gap="small")
+        for it_idx, itin in enumerate(suggested_itineraries[:2]):
+            with it_cols[it_idx]:
+                it_img = sanitize_image_url(itin.get("image"), fallback_url=DEFAULT_CARD_IMG)
+                st.markdown(
+                    f"""<div style="background:#FFFFFF; border:1px solid rgba(26,56,40,0.1); border-radius:18px; overflow:hidden; margin-bottom:10px;">
+  <img src="{it_img}" style="width:100%; height:110px; object-fit:cover;" onerror="this.onerror=null;this.src='{DEFAULT_CARD_IMG}';" />
+  <div style="padding:14px;">
+    <div style="font-family:'Playfair Display', serif; font-size:15px; font-weight:700; color:#1A3828;">{itin['title']}</div>
+    <div style="font-size:11.5px; color:#557461; margin-bottom:6px;">⏱️ {itin['duration']} • {itin['sector']}</div>
+  </div>
+</div>""",
+                    unsafe_allow_html=True
+                )
+                if st.button(f"View Route Plan ➔", key=f"chat_view_itin_{it_idx}", use_container_width=True):
+                    with st.spinner(f"Generating {itin['title']}..."):
+                        plan = get_or_generate_itinerary(itin)
+                        st.session_state.itinerary_data = plan
+                        st.session_state.active_view = "home"
+                        st.rerun()
+
+    # 4. CHAT INPUT AT THE BOTTOM
     user_prompt = st.chat_input("Ask Alpine — Where would you like to wander?")
     if user_prompt:
         st.session_state.messages.append({"role": "user", "content": user_prompt})
-        with st.chat_message("user", avatar="👤"):
-            st.markdown(user_prompt)
-
-        with st.chat_message("assistant", avatar="🌿"):
-            api_key = os.environ.get("GEMINI_API_KEY", "")
-            client = genai.Client(api_key=api_key) if api_key else genai.Client()
-
-            pkg_context = "\n".join([f"- {p['title']} ({p['duration']}): {p['price_per_head']}/head" for p in LIVE_PACKAGES])
-            system_instruction = (
-                "You are the senior AI Travel Concierge at Wondoo Studio.\n"
-                f"AVAILABLE PACKAGES:\n{pkg_context}\n"
-                "Keep answers concise and highlight matched packages with pricing."
-            )
-
-            contents = [
-                types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part.from_text(text=m["content"])])
-                for m in st.session_state.messages
-            ]
-            response_stream = stream_gemini_with_fallback(client, contents, system_instruction)
-
-            def stream_text_generator():
-                for chunk in response_stream:
-                    if getattr(chunk, "text", None):
-                        yield chunk.text
-                    elif getattr(chunk, "candidates", None) and chunk.candidates[0].content:
-                        for p in chunk.candidates[0].content.parts:
-                            if getattr(p, "text", None):
-                                yield p.text
-
-            full_reply = st.write_stream(stream_text_generator())
-
-        st.session_state.messages.append({"role": "assistant", "content": full_reply})
         st.rerun()
 
 # VIEW 4: PRIMARY HOME SCREEN (LOCKED HORIZONTAL CAPSULE PILL)
@@ -2061,7 +2221,7 @@ else:
         )
 
         room_tier_list = list(ROOM_TIER_PREMIUM_MAP.keys())
-        cur_tier_idx = room_tier_list.index(st.session_state.selected_room_tier) if st.session_state.selected_room_tier in room_tier_list else 0
+        cur_tier_idx = room_tier_list.index(st.session_state.selected_room_tier) if selected_room_tier in room_tier_list else 0
 
         chosen_tier_radio = st.radio(
             "Select Room Tier",
