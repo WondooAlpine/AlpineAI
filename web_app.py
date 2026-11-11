@@ -2027,10 +2027,45 @@ elif not st.session_state.get("itinerary_data"):
     """
     components.html(typing_cursor_html, height=0)
 
-    if submitted and home_query:
-        st.session_state.messages.append({"role": "user", "content": home_query})
-        st.session_state.active_view = "ai_concierge"
-        st.rerun()
+    ticker_cards = ""
+    for d in LIVE_ITINERARIES:
+        c_img = sanitize_image_url(d.get("image"), fallback_url=DEFAULT_CARD_IMG)
+        t_name = d['title'].split('&')[0].strip()
+        t_dur = d.get('duration', '4 Days')
+        t_sec = d.get('sector', 'Himalaya')
+        ticker_cards += f'<div style="display:inline-flex; align-items:center; background:#FFFFFF; border:1.5px solid rgba(26,56,40,0.1); border-radius:18px; padding:8px 16px; margin-right:16px; box-shadow:0 4px 12px rgba(26,56,40,0.04); min-width:240px; flex-shrink:0;"><img src="{c_img}" style="width:120px; height:120px; border-radius:12px; object-fit:cover; margin-right:12px;" /><div><div style="font-family:\'Playfair Display\', serif; font-size:14px; font-weight:700; color:#1A3828; white-space:nowrap;">{t_name}</div><div style="font-size:11px; color:#557461; white-space:nowrap;">{t_dur} • {t_sec}</div></div></div>'
+
+    st.markdown(f"""
+    <style>
+    @keyframes scrollTicker {{
+      0% {{ transform: translateX(0); }}
+      100% {{ transform: translateX(-50%); }}
+    }}
+    .ticker-track {{
+      display: flex;
+      width: max-content;
+      animation: scrollTicker 60s linear infinite;
+    }}
+    .ticker-track:hover {{
+      animation-play-state: paused;
+    }}
+    .ticker-container {{
+      overflow: hidden;
+      width: 100%;
+      padding: 10px 0 20px 0;
+      position: relative;
+    }}
+    </style>
+    <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; color:#376E4B; margin-bottom:8px;">
+      ✦ Live Circuit Feed
+    </div>
+    <div class="ticker-container">
+      <div class="ticker-track">
+        {ticker_cards}
+        {ticker_cards}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("### Inspiring Destinations")
     dest_cols = st.columns(3, gap="medium")
