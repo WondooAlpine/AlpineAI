@@ -145,7 +145,7 @@ def get_secret(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 BOOKING_WEBHOOK_URL = get_secret("BOOKING_WEBHOOK_URL", "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_DEPLOYMENT_ID/exec")
-AGENCY_WHATSAPP_NUMBER = get_secret("AGENCY_WHATSAPP_NUMBER", "919800000000")
+AGENCY_WHATSAPP_NUMBER = get_secret("AGENCY_WHATSAPP_NUMBER", "919477123441")
 UPI_VPA = get_secret("UPI_VPA", "wondooexpeditions@oksbi")
 UPI_PAYEE_NAME = get_secret("UPI_PAYEE_NAME", "Wondoo Alpine Studio")
 RAZORPAY_KEY_ID = get_secret("RAZORPAY_KEY_ID", "rzp_test_1DP5mmOlF5G5ag")
@@ -2044,7 +2044,7 @@ elif not st.session_state.get("itinerary_data"):
     .ticker-track {{
       display: flex;
       width: max-content;
-      animation: scrollTicker 60s linear infinite;
+      animation: scrollTicker 80s linear infinite;
     }}
     .ticker-track:hover {{
       animation-play-state: paused;
